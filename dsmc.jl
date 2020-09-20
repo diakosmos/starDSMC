@@ -19,11 +19,12 @@ the module being named "dsmc", intended to contain both "dsmcne" and "dsmceq".
 module dsmc
 
 using Random
+using LinearAlgebra # for norm() of a vector
 using Plots
 
 """
-Declare structure for lists used in sorting.
-See Fig 11.7 in Garcia, which shows how Xref, cell_n and index should behave.
+Declare structure for lists used in sorting:
+    See Fig 11.7 in Garcia, which shows how Xref, cell_n and index should behave.
 """
 mutable struct sortDataS
     ncell ::Int64
@@ -88,6 +89,80 @@ sampDataS(ncell,nsamp) = sampDataS(
     zeros(ncell,3),
     zeros(ncell),
 )
+
+
+"""
+colider():
+    Called by dsmceq() and dsmcne() to evaluate collisions using the DSMC algorithm.
+
+    NOTE the change in order from Garcia, so that mutated arguments are put first.
+
+Updated (inout) Inputs:
+    v           velocities of particles
+    crmax       estmated maximum relative speed in a cell
+    selxtra     extra selections carried over from last timestep
+
+Non-mutated (in) inputs:
+    tau         time step
+    coeff       coefficient in computing number of selected pairs
+    sD          structure containing sorting lists
+
+Output:
+    col         Total number of collisions processed
+"""
+function colider!!!(v,vrmax,selextra,  tau,coeff,sD)
+    ncell = sD.ncell
+    col = 0             # Count number of collisions
+
+    # Loop over cells, processing collisions in each cell
+    for jcell in 1:ncell
+        # Skip cells with only one particle
+        number = sD.cell_n[jcell]
+        if number > 1
+            # Determine number of candidate collision pairs
+            # to be selected in this cell
+            select = coeff * number * (number-1) *crmax[jcell] + selxtra[jcell]
+            nsel = Int64(floor(select))
+            selxtra[jcell] = select - nsel  # Carry over any left-over fraction
+            crm = crmax[jcell]
+
+            # Loop over total number of candidate collision pairs
+            for isel in 1:nsel
+                # Pick two particles at random out of this cell
+                # NB: k, kk ∈ [0, 1, 2, ..., number-1], k != kk.
+                k  = Int64(floor(rand() * number))
+                kk = Int64(ceil(k+rand()*(number-1))) % number
+                assert k != kk # Should not ever be a problem...
+                ip1 = sD.Xref[k + sD.index[jcell]]  # First particle
+                ip2 = sD.Xref[kk+ sD.index[jcell]]  # Second particle
+
+                # Calculate pair's relative speed
+                cr = norm( v[ip1,:] - v[ip2,:] )  # Relative speed
+                if cr > crm   # If relative speed is greater than crm,
+                    crm = cr  # then reset crm to larger value
+                end
+
+                # Accept or reject candidate pair according to relative speed
+                if cr/crmax[jcell] > rand()
+                    # If pair selected, then select post-collision velocities
+                    col += 1                            # Collision counter
+                    vcm = 0.5*(v[ip1,:] + v[ip2,:])     # Center-of-mass velocity
+                    cos_th = 1 - 2*rand()               # Cosine and sine of
+                    sin_th = sqrt(1.0 - cos_th^2)       #   collision angle theta
+                    phi = 2π * rand()                   # Collsion angle phi
+                    vrel = zeros(3)
+                    vrel[1] = cr*cos_th                 # Compute post-collision
+                    vrel[2] = cr*sin_th * cos(phi)      #    relative velocity
+                    vrel[3] = cr*sin_th * sin(phi)
+                    v[ip1,:] = vcm + 0.5 * vrel         # Update post-collision
+                    v[ip2,:] = vcm - 0.5 * vrel         #    velocities
+                end
+            end # Loop over pairs
+        crmax[jcell] = crm    # Update max relative speed
+        end
+    end # Loop over cells
+    return col
+end
 
 """
 dsmceq():
