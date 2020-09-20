@@ -27,8 +27,8 @@ y_ = zeros(N)
 xdot_ = zeros(N)
 ydot_ = zeros(N)
 
-x_[1] = 480.0 #x
-y_[1] = 500.0 #y
+x_[1] = 0.0 #480.0 #x
+y_[1] = 400.0 #y
 xdot_[1] = 0.01 #xdot
 ydot_[1] = 0.0 - 1.5*Omega*x_[1] # ydot - 1.5*Omega*x_[1]
 
@@ -64,11 +64,11 @@ for i in 1:(N-1)
         y_[i+1] += mod( 1.5*Omega*Lx*t, Ly)
         ydot_[i+1] += 1.5 * Omega * Lx
     end
-    y_[i+1] = mod( y_[i+1],Ly)
+    y_[i+1] = mod( y_[i+1] + 0.5*Ly, Ly) - 0.5*Ly
 end
 end
 
-plot(x_[1:N],y_[1:N],seriestype=:scatter)
+plot(x_[1:10:N],y_[1:10:N],seriestype=:scatter)
 
 mutable struct Particle
     m::Float64 # mass
@@ -83,7 +83,7 @@ end
 
 pt = Particle(1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0)
 
-function move( part::Particle , tau::Float64 , t )
+function move!( part::Particle , tau::Float64 , t )
     part.xdot += xdot - 0.5 * tau * Omega^2 * part.x;
     part.Py = part.ydot + 2*Omega*part.x;
     #
@@ -111,7 +111,7 @@ function move( part::Particle , tau::Float64 , t )
     part.y = mod( part.y,Ly);
 end
 
-function collide(part1::Particle, part2::Particle)
+function collide!(part1::Particle, part2::Particle)
     # This part should be put somehwere else...
     part1.Px = part1.m * part1.xdot
     part2.Px = part2.m * part2.xdot

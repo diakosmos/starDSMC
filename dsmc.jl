@@ -112,6 +112,20 @@ end
 
 """
 mover - Function to move particles by free flight. Also handles collisions with walls.
+
+inputs:
+    x       positions of the particles
+    v       velocities of the particles
+    npart   number of particles in the system
+    L       system length
+    mpv     most probable velocity (off the wall)
+    vwall   wall velocities
+    tau     time step
+
+outputs:
+    [ x, v    updated positions and velocities ] - actually not output; mutated.
+    strikes number of particles striking each wall
+    delv    change of y-velocity at each wall
 """
 function mover!(
         x    ::Array{Float64,1},
@@ -121,7 +135,7 @@ function mover!(
         mpv  ::Float64,
         vwall::Float64,
         tau  ::Float64,
-    )
+    )  # return: (x, v, strikes, delv)
     x_old = x
     x += v[:,1] * tau
     strikes = [0,0]
@@ -130,6 +144,32 @@ function mover!(
     vw = [-vwall, vwall]
     direction = [1,-1]
     stdev = mpv / sqrt(2.0)
+    for i in 1:npart
+        # Test if particle strikes either wall
+        if x[i] <= 0
+            flag = 1 # particle strikes left wall
+        elseif x[i] >= L
+            flag = 2 # particle strikes right wall
+        else
+            flag = 0 # particle strikes neither wall
+        end
+
+        # If particle strikes a wall, reset its position
+        # and velocity. Record velocity change.
+        if flag > 0
+            strikes[flag] += 1
+            vyInitial = v[i,2]
+            # Reset velocity components as biased Maxwellian
+            # Exponential dist. in x; Gaussian in y an z
+            v[i,1] = direction[flag] * sqrt(-log(1-rand())) * mpv
+            v[i,2] = stdev*randn() + vw[flag] # Add wall velocity
+            v[i,3] = stdev*randn()
+            # Time of flight after leaving wall
+            x[i] = xwall[flag] + v[i,1]*dtr
+            # Record velocity change for force measurement
+            delv[flag] += v[i,2] - vyInitial
+        end
+    end
     #return (x,v,strikes,delv)
     return (strikes,delv) # No need to return x, v, since mutable & passed by sharing.
 end
