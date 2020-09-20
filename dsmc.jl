@@ -16,6 +16,13 @@ Here, I have bundled all of these together as Julia functions within a module,
 the module being named "dsmc", intended to contain both "dsmcne" and "dsmceq".
 """
 
+const output = IOBuffer()
+using REPL
+const out_terminal = REPL.Terminals.TerminalBuffer(output)
+const basic_repl = REPL.BasicREPL(out_terminal)
+const basic_display = REPL.REPLDisplay(basic_repl)
+Base.pushdisplay(basic_display)
+
 module dsmc
 
 using Random
@@ -110,7 +117,7 @@ Non-mutated (in) inputs:
 Output:
     col         Total number of collisions processed
 """
-function colider!!!(v,vrmax,selextra,  tau,coeff,sD)
+function colider!!!(v,crmax,selxtra,  tau,coeff,sD)
     ncell = sD.ncell
     col = 0             # Count number of collisions
 
@@ -132,7 +139,7 @@ function colider!!!(v,vrmax,selextra,  tau,coeff,sD)
                 # NB: k, kk ∈ [0, 1, 2, ..., number-1], k != kk.
                 k  = Int64(floor(rand() * number))
                 kk = Int64(ceil(k+rand()*(number-1))) % number
-                assert k != kk # Should not ever be a problem...
+                @assert k != kk # Should not ever be a problem...
                 ip1 = sD.Xref[k + sD.index[jcell]]  # First particle
                 ip2 = sD.Xref[kk+ sD.index[jcell]]  # Second particle
 
@@ -205,7 +212,7 @@ function dsmceq()
     selxtra = zeros(ncell)        # Used by routine "colider"
     coeff = 0.5*eff_num*pi*diam^2*tau/(L^3/ncell)
     coltot = 0
-
+    sortData = sortDataS( ncell, npart )
     # [ next, Garcia declares structure for lists used in sorting, but we have
     #  moved this to the preamble above. ]
 
@@ -216,13 +223,13 @@ function dsmceq()
 
         # Move all the particles ballistically
         x += v[:,1]*tau   # Update x position of particles - recall x is a 1D array
-        x = rem.(x+L,L)   # Periodic boundary conditions (why does Garcia add L first?!?!)
+        x = rem.(x.+L,L)   # Periodic boundary conditions (why does Garcia add L first?!?!)
 
-        # Sort the particles into cells
-        sortData = sorter(x,L,sortData)
+        # Sort the particles into cells (note change in order from Garcia)
+        sorter!(sortData,x,L)
 
         # Evaluate collisions among the particles
-        (v, vrmax, selextra, col) = colider(v, vrmax, tau, selextra, coeff, sortData)
+        col = colider!!!(v, vrmax, selxtra,      tau, coeff, sortData)
         coltot += col
 
         # Periodically display the current progress
@@ -237,11 +244,12 @@ function dsmceq()
     # Plot the histogram of the final speed distribution
     vmag = sqrt.(v[:,1].^2 + v[:,2].^2 + v[:,3].^2)
     time = nstep*tau
-    display(histogram(vmag, bins=vbin, #normalize=true,
+    h = histogram(vmag, bins=vbin, #normalize=true,
         title = "Final distrib., Time = $time sec.",
-        xlabel = "Speed [m/s]", ylabel= "Number", legend=false))
+        xlabel = "Speed [m/s]", ylabel= "Number", legend=false)
+    display(h)
 
-    return nothing #vmag
+    return h #vmag
 end
 
 function dsmcne()
