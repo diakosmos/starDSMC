@@ -21,11 +21,14 @@ module dsmc
 using Random
 using Plots
 
-# Declare structure for lists used in sorting
+"""
+Declare structure for lists used in sorting.
+See Fig 11.7 in Garcia, which shows how Xref, cell_n and index should behave.
+"""
 mutable struct sortDataS
     ncell ::Int64
     npart ::Int64
-    cell_n::Array{Float64,1}
+    cell_n::Array{Int64,1}
     index ::Array{Int64,1}
     Xref  ::Array{Int64,1}
 end
@@ -36,6 +39,39 @@ sortDataS(ncell,npart) = sortDataS(
     zeros(Int64,ncell),
     zeros(Int64,npart),
 )
+
+function sorter!(sD::sortDataS, x, L )
+    # Find the cell address for each particle (this could probably be made cleaner in Julia)
+    npart = sD.npart
+    ncell = sD.ncell
+    jx = floor.(x*ncell/L) .+ 1
+    jx = min.(jx, ncell*ones(npart)) # <ugly>
+    jx = Int64.(jx)
+
+    # Count the number of particles in each cell
+    sD.cell_n = zeros(Int64,ncell)
+    for ipart in 1:npart
+        sD.cell_n[ jx[ipart]] += 1
+    end
+
+    # Build index list as a cumulative sum of the
+    # number of particles in each cell.
+    m = 1
+    for jcell in 1:ncell
+        sD.index[jcell] = m
+        m += sD.cell_n[jcell]
+    end
+
+    # Build cross-reference list
+    temp = zeros(Int64,ncell)
+    for ipart in 1:npart
+        jcell = jx[ipart]
+        k = sD.index[jcell] + temp[jcell]
+        sD.Xref[k] = ipart
+        temp[jcell] += 1
+    end
+end
+
 
 # Declare structure for statistical sampling
 mutable struct sampDataS
@@ -88,7 +124,49 @@ function dsmceq()
         xlabel = "Speed [m/s]", ylabel= "Number", legend=false)) #vbin)
 
     # Initialize variables used for evaluating collisions.
-    return vmag
+    ncell = 15                    # Number of cells
+    tau   = 0.2*(L/ncell)/v_init  # Set timestep tau
+    vrmax = 3*v_init*ones(ncell)  # Estimated max relative speed
+    selxtra = zeros(ncell)        # Used by routine "colider"
+    coeff = 0.5*eff_num*pi*diam^2*tau/(L^3/ncell)
+    coltot = 0
+
+    # [ next, Garcia declares structure for lists used in sorting, but we have
+    #  moved this to the preamble above. ]
+
+    # Loop for the desired number of time steps.
+    print("Enter total number of time steps: ")
+    nstep = parse(Int64,chomp(readline()))
+    for istep in 1:nstep
+
+        # Move all the particles ballistically
+        x += v[:,1]*tau   # Update x position of particles - recall x is a 1D array
+        x = rem.(x+L,L)   # Periodic boundary conditions (why does Garcia add L first?!?!)
+
+        # Sort the particles into cells
+        sortData = sorter(x,L,sortData)
+
+        # Evaluate collisions among the particles
+        (v, vrmax, selextra, col) = colider(v, vrmax, tau, selextra, coeff, sortData)
+        coltot += col
+
+        # Periodically display the current progress
+        if( istep%10 < 1)
+            vmag = sqrt.(v[:,1].^2 + v[:,2].^2 + v[:,3].^2)
+            display(histogram(vmag, bins=vbin, #normalize=true,
+                title = "Done $istep of $nstep steps; $coltot collisions.",
+                xlabel = "Speed [m/s]", ylabel= "Number", legend=false))
+        end
+    end
+
+    # Plot the histogram of the final speed distribution
+    vmag = sqrt.(v[:,1].^2 + v[:,2].^2 + v[:,3].^2)
+    time = nstep*tau
+    display(histogram(vmag, bins=vbin, #normalize=true,
+        title = "Final distrib., Time = $time sec.",
+        xlabel = "Speed [m/s]", ylabel= "Number", legend=false))
+
+    return nothing #vmag
 end
 
 function dsmcne()
