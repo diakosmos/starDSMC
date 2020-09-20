@@ -1,8 +1,7 @@
 """
 This is a straight traslation of the dsmc programs from Alejandro Garcia's book.
 
-He has two programs, "dsmceq" and "dsmcne", which have a lot of overlap. I'm beginning
-with dsmcne.
+He has two programs, "dsmceq" and "dsmcne", which have a lot of overlap.
 
 Subtle tweaks:
 
@@ -20,6 +19,7 @@ the module being named "dsmc", intended to contain both "dsmcne" and "dsmceq".
 module dsmc
 
 using Random
+using Plots
 
 # Declare structure for lists used in sorting
 mutable struct sortDataS
@@ -53,12 +53,52 @@ sampDataS(ncell,nsamp) = sampDataS(
     zeros(ncell),
 )
 
+"""
+dsmceq():
+    Dilute gas simulation using DSMC algorithm.
+    This version illustrates the approach to equilibrium.
+"""
+function dsmceq()
+    # Initialize constants (particle mass, diameter, etc.)
+    boltz   = 1.3806e-23       # Boltzmann's constant (J/K)
+    mass    = 6.63e-26         # Mass of argon atom (kg)
+    diam    = 3.66e-10         # Effective diamter of argon atom (m)
+    T       = 273.0            # Initial temperature (K)
+    """ NOTE: in dsmcne(), for some reason, "density" is number density, whereas
+    in dscmeq(), it's mass density. """
+    density = 1.78             # Density of argon at STP (m^-3)
+    L       = 1.0e-6           # System size is one micron
+    print("Enter number of simulation particles: ")
+    npart = parse(Int64,chomp(readline()))
+    eff_num = density/mass*L^3/npart
+    print("\nEach particle represents $eff_num atoms.\n")
+
+    # Assign random positions and velocities to particles.
+    Random.seed!(9827342423)      # initialize random number generator
+    x = L*rand(npart)             # assign random positions
+    v_init = sqrt(3*boltz*T/mass) # initial speed
+    v = zeros(npart,3)            # only x-component is non-zero
+    v[:,1] = v_init * (1 .- 2*floor.(2*rand(npart)))  # Makes some +, others -.
+
+    # Plot the initial speed distribution
+    vmag = sqrt.(v[:,1].^2 + v[:,2].^2 + v[:,3].^2)
+    vbin = 50:100:1050      # Bins for histogram
+    display(histogram(vmag, bins=vbin, #normalize=true,
+        title = "Initial speed distribution.",
+        xlabel = "Speed [m/s]", ylabel= "Number", legend=false)) #vbin)
+
+    # Initialize variables used for evaluating collisions.
+    return vmag
+end
+
 function dsmcne()
     # Initialize constants (particle mass, diameter, etc.)
     boltz   = 1.3806e-23       # Boltzmann's constant (J/K)
     mass    = 6.63e-26         # Mass of argon atom (kg)
     diam    = 3.66e-10         # Effective diamter of argon atom (m)
     T       = 273.0            # Initial temperature (K)
+    """ NOTE: in dsmcne(), for some reason, "density" is number density, whereas
+    in dscmeq(), it's mass density. """
     density = 2.685e25         # Number density of argon at STP (m^-3)
     L       = 1.0e-6           # System size is one micron
     Volume  = L^3              # Volume of the system (m^3)
@@ -111,9 +151,10 @@ function dsmcne()
 end
 
 """
-mover - Function to move particles by free flight. Also handles collisions with walls.
+mover:
+    - Function to move particles by free flight. Also handles collisions with walls.
 
-inputs:
+    inputs:
     x       positions of the particles
     v       velocities of the particles
     npart   number of particles in the system
@@ -122,7 +163,7 @@ inputs:
     vwall   wall velocities
     tau     time step
 
-outputs:
+    outputs:
     [ x, v    updated positions and velocities ] - actually not output; mutated.
     strikes number of particles striking each wall
     delv    change of y-velocity at each wall
