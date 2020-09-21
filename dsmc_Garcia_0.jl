@@ -357,9 +357,7 @@ function dsmcne()
     strikeSum = [0, 0]
     print("Enter total number of timesteps: ")
     nstep = parse(Int64,readline())
-    j = 1
     for istep in 1:nstep
-        j += 1
         # Move all the particles
         (strikes, delv) = mover!!(x,v,npart,L,mpv,vwall,tau)
         strikeSum += strikes
@@ -387,7 +385,6 @@ function dsmcne()
         end
         =#
     end
-    print("Steps: $j\n")
     print("STRIKES:\n")
     print(strikeSum)
     print("\n")
