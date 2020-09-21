@@ -79,7 +79,7 @@ function sorter!(sD::sortDataS, x, L )
         sD.Xref[k] = ipart
         temp[jcell] += 1
     end
-end
+end#sorter!
 
 
 # Declare structure for statistical sampling
@@ -148,7 +148,7 @@ function sampler!(sampD::sampDataS, x, v, npart, L)
     sampD.nsamp += 1
 
     return nothing
-end
+end#sampler!
 
 
 """
@@ -222,7 +222,7 @@ function colider!!!(v,crmax,selxtra,  tau,coeff,sD)
         end
     end # Loop over cells
     return col
-end
+end#colider!!!
 
 """
 dsmceq():
@@ -303,7 +303,7 @@ function dsmceq()
     display(h)
 
     return h #vmag
-end
+end#dsmceq
 
 function dsmcne()
     # Initialize constants (particle mass, diameter, etc.)
@@ -357,11 +357,12 @@ function dsmcne()
     strikeSum = [0, 0]
     print("Enter total number of timesteps: ")
     nstep = parse(Int64,readline())
-    j = 1
+
     for istep in 1:nstep
-        j += 1
+
         # Move all the particles
-        (strikes, delv) = mover!!(x,v,npart,L,mpv,vwall,tau)
+        (x,v,strikes, delv) = mover!!(x,v,npart,L,mpv,vwall,tau)
+        #(strikes, delv) = mover!!(x,v,npart,L,mpv,vwall,tau)
         strikeSum += strikes
 
         # Sort the particles into cells
@@ -387,10 +388,7 @@ function dsmcne()
         end
         =#
     end
-    print("Steps: $j\n")
-    print("STRIKES:\n")
-    print(strikeSum)
-    print("\n")
+
     # Normalize the accumulated statistics
     nsamp = sampData.nsamp
     ave_n = (eff_num/(Volume/ncell)) * sampData.ave_n / nsamp
@@ -407,10 +405,8 @@ function dsmcne()
     print("Right wall:  $(force[2]) +/- $(ferr[2])\n")
     vgrad = 2*vwall/L   # Velocity gradient
     visc = 0.5 * (-force[1]+force[2])/vgrad  # Average viscosity
-    visc2= 0.5 * (-force[1]-force[2])/vgrad
     viscerr = 0.5 * (ferr[1]+ferr[2])/vgrad  # Error
     print("Viscosity = $visc +/- $viscerr N s / m^2\n")
-    print("Viscosity2 = $visc2 +/- $viscerr N s / m^2\n")
     eta = 5π/32 * mass * density * (2/sqrt(π)*mpv)*mfp
     print("Theoretical value of viscosity is $eta N s / m^2\n")
 
@@ -424,7 +420,7 @@ function dsmcne()
     display(plot(xcell,ave_T,    # title = "This is the title.",
         xlabel = "position", ylabel= "Temperature", legend=false))
     return 0
-end
+end#dscmne
 
 """
 mover:
@@ -453,7 +449,7 @@ function mover!!(
         vwall::Float64,
         tau  ::Float64,
     )  # return: (x, v, strikes, delv)
-    x_old = x
+    x_old = 1.0*x # mult by 1.0 ensures we're making a copy, not an alias
     x += v[:,1] * tau
     strikes = [0,0]
     delv = [0.0,0.0]
@@ -489,9 +485,9 @@ function mover!!(
             delv[flag] += v[i,2] - vyInitial
         end
     end
-    #return (x,v,strikes,delv)
-    return (strikes,delv) # No need to return x, v, since mutable & passed by sharing.
-end
+    #return (strikes,delv)
+    return (x,v,strikes,delv) # No need to return x, v, since mutable & passed by sharing.
+end#mover!!
 
 end # module
 
