@@ -1,19 +1,6 @@
 """
-This is a straight traslation of the dsmc programs from Alejandro Garcia's book.
-
-He has two programs, "dsmceq" and "dsmcne", which have a lot of overlap.
-
-Subtle tweaks:
-
-The MATLAB version of his program 'dscmne' was actually several programs together:
-    dsmcne.m ->
-        sorter.m
-        colider.m
-        mover.m
-        sampler.m
-
-Here, I have bundled all of these together as Julia functions within a module,
-the module being named "dsmc", intended to contain both "dsmcne" and "dsmceq".
+This is my attempt to take my straight translation of Garcia's DSMC code, and
+re-purose it for planetary disks (rings).
 """
 #=
 const output = IOBuffer()
@@ -49,18 +36,24 @@ sortDataS(ncell,npart) = sortDataS(
     zeros(Int64,npart),
 )
 
-function sorter!(sD::sortDataS, x, L )
+function sorter!(sD::sortDataS, x, xmin, xmax )
+    show_histogram = false
     # Find the cell address for each particle (this could probably be made cleaner in Julia)
+    @assert count(q -> q < xmin, x)==0
+    @assert count(q -> q > xmax, x)==0
     npart = sD.npart
     ncell = sD.ncell
-    jx = floor.(x*ncell/L) .+ 1
+    ell = xmax - xmin
+    xx = (x .- xmin) / ell
+    jx = floor.(xx*ncell) .+ 1
     jx = min.(jx, ncell*ones(npart)) # <ugly>
+    jx = max.(jx, ones(npart)) # also ugly
     jx = Int64.(jx)
 
     # Count the number of particles in each cell
     sD.cell_n = zeros(Int64,ncell)
     for ipart in 1:npart
-        sD.cell_n[ jx[ipart]] += 1
+        sD.cell_n[ jx[ipart] ] += 1
     end
 
     # Build index list as a cumulative sum of the
@@ -79,6 +72,12 @@ function sorter!(sD::sortDataS, x, L )
         sD.Xref[k] = ipart
         temp[jcell] += 1
     end
+    if show_histogram
+        #print(sD.cell_n )
+        display( bar(sD.cell_n, #normalize=true,
+            title = "cell distribution.",
+            xlabel = "cell", ylabel= "Number in cell", legend=false)) #vbin)
+    end
 end#sorter!
 
 
@@ -89,6 +88,7 @@ mutable struct sampDataS
     ave_n::Array{  Int64,1}
     ave_u::Array{Float64,2}
     ave_T::Array{Float64,1}
+    ave_visc::Array{Float64,1}
 end
 sampDataS(ncell,nsamp) = sampDataS(
     ncell,
@@ -96,7 +96,17 @@ sampDataS(ncell,nsamp) = sampDataS(
     zeros(Int64,ncell),
     zeros(      ncell,3),
     zeros(      ncell),
+    zeros(      ncell),
 )
+
+function reset!(sD::sampDataS)
+    sD.nsamp = 0
+    sD.ave_n *= 0
+    sD.ave_u *= 0.0
+    sD.ave_T *= 0.0
+    sD.ave_visc *= 0.0
+end
+
 """
 sampler:
     Used by dsmcne() to sample the number density, fluid velocity, and
@@ -115,10 +125,15 @@ sampler:
         -none-
 
 """
-function sampler!(sampD::sampDataS, x, v, npart, L)
+function sampler!(sampD::sampDataS, x, v, npart, xmin, xmax )
     # Compute cell location for each particle
     ncell = sampD.ncell
-    jx = Int64.(ceil.(ncell*x/L))
+    ell = xmax - xmin
+    xx = (x .- xmin) / ell
+    jx = floor.(xx*ncell) .+ 1
+    jx = min.(jx, ncell*ones(npart)) # <ugly>
+    jx = max.(jx, ones(npart)) # also ugly
+    jx = Int64.(jx)
 
     # There must be a more succint way of writing this in Julia...
     # The idea is to sum the squares along the :
@@ -131,7 +146,7 @@ function sampler!(sampD::sampDataS, x, v, npart, L)
 
     # For each particle, accumulate running sums for its cell
     for ipart in 1:npart
-        jcell = jx[ipart]    # particle ipart is in cell jcell
+        jcell = jx[ipart] #    # particle ipart is in cell jcell
         sum_n[jcell]    += 1
         sum_v[jcell,:]  += v[ipart,:]
         sum_v2[jcell]   += v[ipart,:]' * v[ipart,:]  # (or norm?)
@@ -224,87 +239,6 @@ function colider!!!(v,crmax,selxtra,  tau,coeff,sD)
     return col
 end#colider!!!
 
-"""
-dsmceq():
-    Dilute gas simulation using DSMC algorithm.
-    This version illustrates the approach to equilibrium.
-"""
-function dsmceq()
-    # Initialize constants (particle mass, diameter, etc.)
-    boltz   = 1.3806e-23       # Boltzmann's constant (J/K)
-    mass    = 6.63e-26         # Mass of argon atom (kg)
-    diam    = 3.66e-10         # Effective diamter of argon atom (m)
-    T       = 273.0            # Initial temperature (K)
-    """ NOTE: in dsmcne(), for some reason, "density" is number density, whereas
-    in dscmeq(), it's mass density. """
-    density = 1.78             # Density of argon at STP (m^-3)
-    L       = 1.0e-6           # System size is one micron
-    print("Enter number of simulation particles: ")
-    npart = parse(Int64,chomp(readline()))
-    eff_num = density/mass*L^3/npart
-    print("\nEach particle represents $eff_num atoms.\n")
-
-    # Assign random positions and velocities to particles.
-    Random.seed!(9827342423)      # initialize random number generator
-    x = L*rand(npart)             # assign random positions
-    v_init = sqrt(3*boltz*T/mass) # initial speed
-    v = zeros(npart,3)            # only x-component is non-zero
-    v[:,1] = v_init * (1 .- 2*floor.(2*rand(npart)))  # Makes some +, others -.
-
-    # Plot the initial speed distribution
-    vmag = sqrt.(v[:,1].^2 + v[:,2].^2 + v[:,3].^2)
-    vbin = 50:100:1050      # Bins for histogram
-    display(histogram(vmag, bins=vbin, #normalize=true,
-        title = "Initial speed distribution.",
-        xlabel = "Speed [m/s]", ylabel= "Number", legend=false)) #vbin)
-
-    # Initialize variables used for evaluating collisions.
-    ncell = 15                    # Number of cells
-    tau   = 0.2*(L/ncell)/v_init  # Set timestep tau
-    vrmax = 3*v_init*ones(ncell)  # Estimated max relative speed
-    selxtra = zeros(ncell)        # Used by routine "colider"
-    coeff = 0.5*eff_num*pi*diam^2*tau/(L^3/ncell)
-    coltot = 0
-    sortData = sortDataS( ncell, npart )
-    # [ next, Garcia declares structure for lists used in sorting, but we have
-    #  moved this to the preamble above. ]
-
-    # Loop for the desired number of time steps.
-    print("Enter total number of time steps: ")
-    nstep = parse(Int64,chomp(readline()))
-    for istep in 1:nstep
-
-        # Move all the particles ballistically
-        x += v[:,1]*tau   # Update x position of particles - recall x is a 1D array
-        x = rem.(x.+L,L)   # Periodic boundary conditions (why does Garcia add L first?!?!)
-
-        # Sort the particles into cells (note change in order from Garcia)
-        sorter!(sortData,x,L)
-
-        # Evaluate collisions among the particles
-        col = colider!!!(v, vrmax, selxtra,      tau, coeff, sortData)
-        coltot += col
-
-        # Periodically display the current progress
-        if( istep%10 < 1)
-            vmag = sqrt.(v[:,1].^2 + v[:,2].^2 + v[:,3].^2)
-            display(histogram(vmag, bins=vbin, #normalize=true,
-                title = "Done $istep of $nstep steps; $coltot collisions.",
-                xlabel = "Speed [m/s]", ylabel= "Number", legend=false))
-        end
-    end
-
-    # Plot the histogram of the final speed distribution
-    vmag = sqrt.(v[:,1].^2 + v[:,2].^2 + v[:,3].^2)
-    time = nstep*tau
-    h = histogram(vmag, bins=vbin, #normalize=true,
-        title = "Final distrib., Time = $time sec.",
-        xlabel = "Speed [m/s]", ylabel= "Number", legend=false)
-    display(h)
-
-    return h #vmag
-end#dsmceq
-
 function dsmcne()
     # Initialize constants (particle mass, diameter, etc.)
     boltz   = 1.3806e-23       # Boltzmann's constant (J/K)
@@ -332,11 +266,11 @@ function dsmcne()
 
     # Assign random positions and velocities to particles
     Random.seed!(239482) # from Random - not exported by Random, apparently?
-    x = L * rand(npart)
+    x = L * rand(npart) .- L/2
     # Assign thermal velocities using Gaussian random numbers
     v = sqrt(boltz*T/mass) * randn(npart,3)
     # Add velocity gradient to the y-component
-    v[:,2] += 2*vwall*(x/L) .- vwall
+    #v[:,2] += 2*vwall*(x/L) .- vwall
 
     # Initialize variables used for evaluating collisions
     ncell = 20                     # Number of cells
@@ -358,35 +292,39 @@ function dsmcne()
     print("Enter total number of timesteps: ")
     nstep = parse(Int64,readline())
 
+    # Initial sort the particles into cells
+    sorter!(sortData, x, -L/2, L/2)
     for istep in 1:nstep
-
+        # Periodically display the current progress, then reset samples:
         # Move all the particles
-        (x,v,strikes, delv) = mover!!(x,v,npart,L,mpv,vwall,tau)
+        (x,v,strikes, delv) = newmover!(x,v,npart,L,mpv,vwall,tau)
         #(strikes, delv) = mover!!(x,v,npart,L,mpv,vwall,tau)
         strikeSum += strikes
 
         # Sort the particles into cells
-        sorter!(sortData, x, L)
+        sorter!(sortData, x, -L/2, L/2)
 
         # Evaluate collisions among the particles
         col = colider!!!(v, vrmax, selxtra,      tau, coeff, sortData)
         colSum += col
 
         # After initial transient, accumulate statistical samples
-        if istep > nstep/10
-            sampler!(sampData, x, v, npart, L)
-            dvtot += delv
-            dverr += delv.^2
+         #if istep > nstep/10
+            sampler!(sampData, x, v, npart, -L/2, L/2)
+            #dvtot += delv
+            #dverr += delv.^2
             tsamp += tau
+        #end
+        if( istep%10000 == 0)
+            nsamp = sampData.nsamp
+            ave_n = (eff_num/(Volume/ncell)) * sampData.ave_n / nsamp
+            xcell = (collect(1.0:ncell).-0.5)/ncell * L .- L/2
+            display(plot(xcell,ave_n,    # title = "This is the title.",
+                xlabel = "position", ylabel= "Number density", legend=false))
+            reset!(sampData)
         end
-        #=
-        # Periodically display the current progress
-        if( istep%1000 < 1)
-            ss1 = strikeSum[1]; ss2 = strikeSum[2]
-            print("Finished $istep of $nstep steps, Collisions = $colSum.\n")
-            print("Total wall strikes: $ss1 (left)  $ss2 (right)\n")
-        end
-        =#
+
+
     end
 
     # Normalize the accumulated statistics
@@ -397,21 +335,8 @@ function dsmcne()
     dverr = dverr /(nsamp-1) - (dvtot/nsamp).^2
     dverr = sqrt.(dverr*nsamp)
 
-    # Compute viscosity from drag force on the walls
-    force = (eff_num * mass * dvtot ) / (tsamp*L^2)
-    ferr  = (eff_num * mass * dverr ) / (tsamp*L^2)
-    print("Force per unit area is \n")
-    print("Left wall :  $(force[1]) +/- $(ferr[1])\n")
-    print("Right wall:  $(force[2]) +/- $(ferr[2])\n")
-    vgrad = 2*vwall/L   # Velocity gradient
-    visc = 0.5 * (-force[1]+force[2])/vgrad  # Average viscosity
-    viscerr = 0.5 * (ferr[1]+ferr[2])/vgrad  # Error
-    print("Viscosity = $visc +/- $viscerr N s / m^2\n")
-    eta = 5π/32 * mass * density * (2/sqrt(π)*mpv)*mfp
-    print("Theoretical value of viscosity is $eta N s / m^2\n")
-
     # Plot average density, velocity and temperature
-    xcell = (collect(1.0:ncell).-0.5)/ncell * L
+    xcell = (collect(1.0:ncell).-0.5)/ncell * L .- L/2
     display(plot(xcell,ave_n,    # title = "This is the title.",
         xlabel = "position", ylabel= "Number density", legend=false))
     display(plot(xcell,ave_u,    # title = "This is the title.",
@@ -421,6 +346,47 @@ function dsmcne()
         xlabel = "position", ylabel= "Temperature", legend=false))
     return 0
 end#dscmne
+
+function newmover!(        x    ::Array{Float64,1},
+        v    ::Array{Float64,2},
+        npart::Int64,
+        L    ::Float64,
+        mpv  ::Float64,
+        vwall::Float64,
+        tau  ::Float64, )
+
+    Omega = 0.0
+
+    v[:,1] +=  - 0.5 * tau * Omega^2 * x;
+
+    Py = v[:,2] + 2*Omega*x
+    #
+    v[:,1] += tau * Omega * Py
+    v[:,2]  = Py - Omega * x - Omega*(x + tau*v[:,1])
+    #
+    x += tau * v[:,1]
+    #y += tau * v[:,2]
+    #
+    v[:,1] += tau * Omega * Py
+    #
+    v[:,1] -= 0.5 * tau * (Omega^2 * x)
+    #xdot_[i+1] -= 0.5 * tau * (Omega^2 * xtest);
+    v[:,2]   = Py - 2*Omega*x
+    #
+    for i in 1:npart
+        if (x[i] < -0.5*L)
+            x[i] += L;
+            #part.y -= mod( 1.5*Omega*Lx*t, Ly);
+            v[i,2] -= 1.5 * Omega * L;
+        elseif (x[i] ≥ 0.5*L)
+            x[i] -= L;
+            #part.y += mod( 1.5*Omega*Lx*t, Ly);
+            v[i,2] += 1.5 * Omega * L;
+        end
+        #part.y = mod( part.y,Ly);
+    end
+    return (x, v, [0.0,0.0],0.0)
+end
 
 """
 mover:

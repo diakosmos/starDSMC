@@ -68,7 +68,7 @@ for i in 1:(N-1)
 end
 end
 
-plot(x_[1:10:N],y_[1:10:N],seriestype=:scatter)
+
 
 mutable struct Particle
     m::Float64 # mass
@@ -84,7 +84,7 @@ end
 pt = Particle(1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0)
 
 function move!( part::Particle , tau::Float64 , t )
-    part.xdot += xdot - 0.5 * tau * Omega^2 * part.x;
+    part.xdot += 0.0*xdot - 0.5 * tau * Omega^2 * part.x;
     part.Py = part.ydot + 2*Omega*part.x;
     #
     part.xdot += tau * Omega * part.Py;
