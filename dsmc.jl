@@ -141,10 +141,10 @@ function sampler!(sampD::sampDataS, x, v, npart, L)
     for i in 1:3
         sum_v[:,i] ./= sum_n[:]
     end
-    sum_v2 ./ sum_n
+    sum_v2 ./= sum_n
     sampD.ave_n += sum_n
     sampD.ave_u += sum_v
-    sampD.ave_T += normsq(sum_v)
+    sampD.ave_T += sum_v2 - normsq(sum_v)
     sampD.nsamp += 1
 
     return nothing
@@ -334,7 +334,7 @@ function dsmcne()
     Random.seed!(239482) # from Random - not exported by Random, apparently?
     x = L * rand(npart)
     # Assign thermal velocities using Gaussian random numbers
-    v = sqrt(boltz*T/mass) * rand(npart,3)
+    v = sqrt(boltz*T/mass) * randn(npart,3)
     # Add velocity gradient to the y-component
     v[:,2] += 2*vwall*(x/L) .- vwall
 
@@ -376,9 +376,48 @@ function dsmcne()
             dverr += delv.^2
             tsamp += tau
         end
-
+        #=
         # Periodically display the current progress
+        if( istep%1000 < 1)
+            ss1 = strikeSum[1]; ss2 = strikeSum[2]
+            print("Finished $istep of $nstep steps, Collisions = $colSum.\n")
+            print("Total wall strikes: $ss1 (left)  $ss2 (right)\n")
+        end
+        =#
     end
+
+    # Normalize the accumulated statistics
+    nsamp = sampData.nsamp
+    ave_n = (eff_num/(Volume/ncell)) * sampData.ave_n / nsamp
+    ave_u = sampData.ave_u / nsamp
+    ave_T = mass / (3*boltz) * (sampData.ave_T/nsamp)
+    dverr = dverr /(nsamp-1) - (dvtot/nsamp).^2
+    dverr = sqrt.(dverr*nsamp)
+
+    # Compute viscosity from drag force on the walls
+    force = (eff_num * mass * dvtot ) / (tsamp*L^2)
+    ferr  = (eff_num * mass * dverr ) / (tsamp*L^2)
+    print("Force per unit area is \n")
+    print("Left wall :  $(force[1]) +/- $(ferr[1])\n")
+    print("Right wall:  $(force[2]) +/- $(ferr[2])\n")
+    vgrad = 2*vwall/L   # Velocity gradient
+    visc = 0.5 * (-force[1]+force[2])/vgrad  # Average viscosity
+    visc2= 0.5 * (-force[1]-force[2])/vgrad
+    viscerr = 0.5 * (ferr[1]+ferr[2])/vgrad  # Error
+    print("Viscosity = $visc +/- $viscerr N s / m^2\n")
+    print("Viscosity2 = $visc2 +/- $viscerr N s / m^2\n")
+    eta = 5π/32 * mass * density * (2/sqrt(π)*mpv)*mfp
+    print("Theoretical value of viscosity is $eta N s / m^2\n")
+
+    # Plot average density, velocity and temperature
+    xcell = (collect(1.0:ncell).-0.5)/ncell * L
+    display(plot(xcell,ave_n,    # title = "This is the title.",
+        xlabel = "position", ylabel= "Number density", legend=false))
+    display(plot(xcell,ave_u,    # title = "This is the title.",
+        xlabel = "position", ylabel= "Velocities",
+        label=["x-component" "y-component" "z-component"]))
+    display(plot(xcell,ave_T,    # title = "This is the title.",
+        xlabel = "position", ylabel= "Temperature", legend=false))
     return 0
 end
 
@@ -413,7 +452,7 @@ function mover!!(
     x += v[:,1] * tau
     strikes = [0,0]
     delv = [0.0,0.0]
-    xwall = [0.0 L]
+    xwall = [0.0, L]
     vw = [-vwall, vwall]
     direction = [1,-1]
     stdev = mpv / sqrt(2.0)
@@ -450,3 +489,5 @@ function mover!!(
 end
 
 end # module
+
+dsmc.dsmcne()
