@@ -15,13 +15,14 @@ The MATLAB version of his program 'dscmne' was actually several programs togethe
 Here, I have bundled all of these together as Julia functions within a module,
 the module being named "dsmc", intended to contain both "dsmcne" and "dsmceq".
 """
-
+#=
 const output = IOBuffer()
 using REPL
 const out_terminal = REPL.Terminals.TerminalBuffer(output)
 const basic_repl = REPL.BasicREPL(out_terminal)
 const basic_display = REPL.REPLDisplay(basic_repl)
 Base.pushdisplay(basic_display)
+=#
 
 module dsmc
 
@@ -85,17 +86,69 @@ end
 mutable struct sampDataS
     ncell::Int64
     nsamp::Int64
-    ave_n::Array{Float64,1}
+    ave_n::Array{  Int64,1}
     ave_u::Array{Float64,2}
     ave_T::Array{Float64,1}
 end
 sampDataS(ncell,nsamp) = sampDataS(
     ncell,
     nsamp,
-    zeros(ncell),
-    zeros(ncell,3),
-    zeros(ncell),
+    zeros(Int64,ncell),
+    zeros(      ncell,3),
+    zeros(      ncell),
 )
+"""
+sampler:
+    Used by dsmcne() to sample the number density, fluid velocity, and
+    temperature in the cells.
+
+    Mutable (inout):
+        sampD               sampling data
+
+    Input (in):
+        x                   particle positions
+        v                   particle velocities
+        npart               number of particles
+        L                   system size
+
+    Outputs:
+        -none-
+
+"""
+function sampler!(sampD::sampDataS, x, v, npart, L)
+    # Compute cell location for each particle
+    ncell = sampD.ncell
+    jx = Int64.(ceil.(ncell*x/L))
+
+    # There must be a more succint way of writing this in Julia...
+    # The idea is to sum the squares along the :
+    normsq = x -> sum(x.^2,dims=2)[:,1]
+
+    # Initialize running sums of number, velocity and v^2
+    sum_n  = zeros(Int64, ncell)
+    sum_v  = zeros(       ncell, 3)
+    sum_v2 = zeros(       ncell)
+
+    # For each particle, accumulate running sums for its cell
+    for ipart in 1:npart
+        jcell = jx[ipart]    # particle ipart is in cell jcell
+        sum_n[jcell]    += 1
+        sum_v[jcell,:]  += v[ipart,:]
+        sum_v2[jcell]   += v[ipart,:]' * v[ipart,:]  # (or norm?)
+    end
+
+    # Use current sums to update sample number, velocity and temperature
+    for i in 1:3
+        sum_v[:,i] ./= sum_n[:]
+    end
+    sum_v2 ./ sum_n
+    sampD.ave_n += sum_n
+    sampD.ave_u += sum_v
+    sampD.ave_T += normsq(sum_v)
+    sampD.nsamp += 1
+
+    return nothing
+end
 
 
 """
@@ -305,8 +358,26 @@ function dsmcne()
     print("Enter total number of timesteps: ")
     nstep = parse(Int64,readline())
     for istep in 1:nstep
-        (strikes, delv) = mover!(x,v,npart,L,mpv,vwall,tau)
+        # Move all the particles
+        (strikes, delv) = mover!!(x,v,npart,L,mpv,vwall,tau)
         strikeSum += strikes
+
+        # Sort the particles into cells
+        sorter!(sortData, x, L)
+
+        # Evaluate collisions among the particles
+        col = colider!!!(v, vrmax, selxtra,      tau, coeff, sortData)
+        colSum += col
+
+        # After initial transient, accumulate statistical samples
+        if istep > nstep/10
+            sampler!(sampData, x, v, npart, L)
+            dvtot += delv
+            dverr += delv.^2
+            tsamp += tau
+        end
+
+        # Periodically display the current progress
     end
     return 0
 end
@@ -329,7 +400,7 @@ mover:
     strikes number of particles striking each wall
     delv    change of y-velocity at each wall
 """
-function mover!(
+function mover!!(
         x    ::Array{Float64,1},
         v    ::Array{Float64,2},
         npart::Int64,
@@ -367,6 +438,8 @@ function mover!(
             v[i,2] = stdev*randn() + vw[flag] # Add wall velocity
             v[i,3] = stdev*randn()
             # Time of flight after leaving wall
+            dtr = tau * (x[i]-xwall[flag]) / (x[i] - x_old[i])
+            # Reset posision after leaving wall
             x[i] = xwall[flag] + v[i,1]*dtr
             # Record velocity change for force measurement
             delv[flag] += v[i,2] - vyInitial
