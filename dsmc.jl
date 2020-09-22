@@ -239,11 +239,25 @@ function colider!!!(v,crmax,selxtra,  tau,coeff,sD)
     return col
 end#colider!!!
 
-function getTeff(x,v,Omega,ipart)
+function getTeff(x,v,Omega,npart)
     shear = -1.5 * Omega
-    vprime = 1.0*v # will be used for peculiar velocity
+    vback = shear*x * [0.0 1.0 0.0]
+    vprime = v - vback
+    E = 0.0
     for i in 1:npart
+        E += vprime[i,1]^2 + vprime[i,2]^2 + vprime[i,3]^2
+    end
+    return E
+end
 
+function slow(x,v,Omega,f)
+    shear = -1.5 * Omega
+    vback = shear*x * [0.0 1.0 0.0]
+    vprime = v - vback
+    vprime2 = f * vprime
+    w = vprime2 + vback
+    return w
+    E = 0.0
 end
 
 function dsmcne()
@@ -313,6 +327,7 @@ function dsmcne()
 
     # Initial sort the particles into cells
     sorter!(sortData, x, -L/2, L/2)
+    E0 = getTeff(x,v,Omega,npart)
     for istep in 1:nstep
         # Periodically display the current progress, then reset samples:
         # Move all the particles
@@ -333,8 +348,15 @@ function dsmcne()
             #dvtot += delv
             #dverr += delv.^2
             tsamp += tau
+
+        E = getTeff(x,v,Omega,npart)
+        f = sqrt(E0/E)
+        v=slow(x,v,Omega,f)
+        E = getTeff(x,v,Omega,npart)
+        eoe0 = E / E0
+        #print("E/E0: $eoe0\n")
         #end
-        if( istep%300 == 0)
+        if( istep%1000 == 0)
             nsamp = sampData.nsamp
             ave_n = (eff_num/(Volume/ncell)) * sampData.ave_n / nsamp
             xcell = (collect(1.0:ncell).-0.5)/ncell * L .- L/2
