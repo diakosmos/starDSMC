@@ -39,8 +39,8 @@ sortDataS(ncell,npart) = sortDataS(
 function sorter!(sD::sortDataS, x, xmin, xmax )
     show_histogram = false
     # Find the cell address for each particle (this could probably be made cleaner in Julia)
-    @assert count(q -> q < xmin, x)==0
-    @assert count(q -> q > xmax, x)==0
+    #@assert count(q -> q < xmin, x)==0
+    #@assert count(q -> q > xmax, x)==0
     npart = sD.npart
     ncell = sD.ncell
     ell = xmax - xmin
@@ -239,11 +239,18 @@ function colider!!!(v,crmax,selxtra,  tau,coeff,sD)
     return col
 end#colider!!!
 
+function getTeff(x,v,Omega,ipart)
+    shear = -1.5 * Omega
+    vprime = 1.0*v # will be used for peculiar velocity
+    for i in 1:npart
+
+end
+
 function dsmcne()
     # Initialize constants (particle mass, diameter, etc.)
     boltz   = 1.3806e-23       # Boltzmann's constant (J/K)
     mass    = 6.63e-26         # Mass of argon atom (kg)
-    diam    = 3.66e-10         # Effective diamter of argon atom (m)
+    diam    = 1.0e-9 # 3.66e-10         # Effective diamter of argon atom (m)
     T       = 273.0            # Initial temperature (K)
     """ NOTE: in dsmcne(), for some reason, "density" is number density, whereas
     in dscmeq(), it's mass density. """
@@ -257,24 +264,36 @@ function dsmcne()
     mfp = Volume / (sqrt(2.0) * π * diam^2 * npart * eff_num)
     swmfp = L/mfp # not defined in original code
     print("System width is $swmfp mean free paths.\n")
+    print("Mean free path: $mfp\n")
+        ncell = 256                     # Number of cells
+    c_vs_mfp = (L / ncell)/mfp
+    print("cell size / mfp (<1?): $c_vs_mfp\n")
     mpv = sqrt(2*boltz*T/mass)
-    print("Enter wall velocity as Mach number: ")
-    vwall_m = parse(Float64,readline())
-    vwall = vwall_m * sqrt(5.0/3.0 * boltz*T/mass)
-    mvwall = -vwall # not defined in original code
-    print("Wall velocities are $mvwall and $vwall m/s.\n")
-
+    collfreq = mpv/mfp
+    print("Collision frequency: $collfreq\n")
+    print("Enter Omega as a fraction of mean collision frequency: ")
+    Omega = parse(Float64,readline()) * collfreq
+    print("Omgea = $Omega\n")
+    Depi = mpv / 2 / pi / Omega
+    print("Typical epicyclic diameter: $Depi\n")
+    Depi_v_mfp = Depi / mfp
+    print("Epicyclic diameter in mean free paths: $Depi_v_mfp\n")
+    Depi_v_c = Depi / (L / npart)
+    print("Epicyclic diameter / cell width: $Depi_v_c\n")
     # Assign random positions and velocities to particles
     Random.seed!(239482) # from Random - not exported by Random, apparently?
     x = L * rand(npart) .- L/2
     # Assign thermal velocities using Gaussian random numbers
     v = sqrt(boltz*T/mass) * randn(npart,3)
     # Add velocity gradient to the y-component
-    #v[:,2] += 2*vwall*(x/L) .- vwall
+    v[:,2] += -1.5*Omega*x
 
     # Initialize variables used for evaluating collisions
-    ncell = 20                     # Number of cells
+    ncell = 256                     # Number of cells
     tau = 0.2 * (L/ncell) / mpv    # Set timestep tau
+    print("Timestep (tau): $tau\n")
+    cpertau = collfreq * tau
+    print("Collisions per timestep: $cpertau\n")
     vrmax = 3*mpv*ones(ncell)#,1)  # Estimated max rl. speed in a cell
     selxtra = zeros(ncell)#,1)     # Used by collision routing "colider"
     coeff = 0.5 * eff_num * π * diam^2 * tau / (Volume/ncell)
@@ -297,7 +316,7 @@ function dsmcne()
     for istep in 1:nstep
         # Periodically display the current progress, then reset samples:
         # Move all the particles
-        (x,v,strikes, delv) = newmover!(x,v,npart,L,mpv,vwall,tau)
+        (x,v,strikes, delv) = newmover!(x,v,npart,L,mpv,Omega,tau)
         #(strikes, delv) = mover!!(x,v,npart,L,mpv,vwall,tau)
         strikeSum += strikes
 
@@ -315,7 +334,7 @@ function dsmcne()
             #dverr += delv.^2
             tsamp += tau
         #end
-        if( istep%10000 == 0)
+        if( istep%300 == 0)
             nsamp = sampData.nsamp
             ave_n = (eff_num/(Volume/ncell)) * sampData.ave_n / nsamp
             xcell = (collect(1.0:ncell).-0.5)/ncell * L .- L/2
@@ -352,10 +371,10 @@ function newmover!(        x    ::Array{Float64,1},
         npart::Int64,
         L    ::Float64,
         mpv  ::Float64,
-        vwall::Float64,
+        Omega::Float64,
         tau  ::Float64, )
 
-    Omega = 0.0
+    #Omega = 1.0e10
 
     v[:,1] +=  - 0.5 * tau * Omega^2 * x;
 
@@ -406,54 +425,6 @@ mover:
     strikes number of particles striking each wall
     delv    change of y-velocity at each wall
 """
-function mover!!(
-        x    ::Array{Float64,1},
-        v    ::Array{Float64,2},
-        npart::Int64,
-        L    ::Float64,
-        mpv  ::Float64,
-        vwall::Float64,
-        tau  ::Float64,
-    )  # return: (x, v, strikes, delv)
-    x_old = 1.0*x # mult by 1.0 ensures we're making a copy, not an alias
-    x += v[:,1] * tau
-    strikes = [0,0]
-    delv = [0.0,0.0]
-    xwall = [0.0, L]
-    vw = [-vwall, vwall]
-    direction = [1,-1]
-    stdev = mpv / sqrt(2.0)
-    for i in 1:npart
-        # Test if particle strikes either wall
-        if x[i] <= 0
-            flag = 1 # particle strikes left wall
-        elseif x[i] >= L
-            flag = 2 # particle strikes right wall
-        else
-            flag = 0 # particle strikes neither wall
-        end
-
-        # If particle strikes a wall, reset its position
-        # and velocity. Record velocity change.
-        if flag > 0
-            strikes[flag] += 1
-            vyInitial = v[i,2]
-            # Reset velocity components as biased Maxwellian
-            # Exponential dist. in x; Gaussian in y an z
-            v[i,1] = direction[flag] * sqrt(-log(1-rand())) * mpv
-            v[i,2] = stdev*randn() + vw[flag] # Add wall velocity
-            v[i,3] = stdev*randn()
-            # Time of flight after leaving wall
-            dtr = tau * (x[i]-xwall[flag]) / (x[i] - x_old[i])
-            # Reset posision after leaving wall
-            x[i] = xwall[flag] + v[i,1]*dtr
-            # Record velocity change for force measurement
-            delv[flag] += v[i,2] - vyInitial
-        end
-    end
-    #return (strikes,delv)
-    return (x,v,strikes,delv) # No need to return x, v, since mutable & passed by sharing.
-end#mover!!
 
 end # module
 
