@@ -185,7 +185,7 @@ Non-mutated (in) inputs:
 Output:
     col         Total number of collisions processed
 """
-function colider!!!(v,crmax,selxtra,  tau,coeff,sD)
+function colider!!!(v,crmax,selxtra,  tau,coeff,sD,ecor)
     ncell = sD.ncell
     col = 0             # Count number of collisions
 
@@ -207,7 +207,7 @@ function colider!!!(v,crmax,selxtra,  tau,coeff,sD)
                 # NB: k, kk ∈ [0, 1, 2, ..., number-1], k != kk.
                 k  = Int64(floor(rand() * number))
                 kk = Int64(ceil(k+rand()*(number-1))) % number
-                @assert k != kk # Should not ever be a problem...
+                # @assert k != kk # Should not ever be a problem...
                 ip1 = sD.Xref[k + sD.index[jcell]]  # First particle
                 ip2 = sD.Xref[kk+ sD.index[jcell]]  # Second particle
 
@@ -226,9 +226,9 @@ function colider!!!(v,crmax,selxtra,  tau,coeff,sD)
                     sin_th = sqrt(1.0 - cos_th^2)       #   collision angle theta
                     phi = 2π * rand()                   # Collsion angle phi
                     vrel = zeros(3)
-                    vrel[1] = cr*cos_th                 # Compute post-collision
-                    vrel[2] = cr*sin_th * cos(phi)      #    relative velocity
-                    vrel[3] = cr*sin_th * sin(phi)
+                    vrel[1] = ecor * cr*cos_th                 # Compute post-collision
+                    vrel[2] = ecor * cr*sin_th * cos(phi)      #    relative velocity
+                    vrel[3] = ecor * cr*sin_th * sin(phi)
                     v[ip1,:] = vcm + 0.5 * vrel         # Update post-collision
                     v[ip2,:] = vcm - 0.5 * vrel         #    velocities
                 end
@@ -264,7 +264,7 @@ function dsmcne()
     # Initialize constants (particle mass, diameter, etc.)
     boltz   = 1.3806e-23       # Boltzmann's constant (J/K)
     mass    = 6.63e-26         # Mass of argon atom (kg)
-    diam    = 1.0e-9 # 3.66e-10         # Effective diamter of argon atom (m)
+    diam    = 5.0e-10 # 3.66e-10         # Effective diamter of argon atom (m)
     T       = 273.0            # Initial temperature (K)
     """ NOTE: in dsmcne(), for some reason, "density" is number density, whereas
     in dscmeq(), it's mass density. """
@@ -285,6 +285,9 @@ function dsmcne()
     mpv = sqrt(2*boltz*T/mass)
     collfreq = mpv/mfp
     print("Collision frequency: $collfreq\n")
+    print("Enter coefficient of restitution (e), 0<e<=1: ")
+    ecor = parse(Float64,readline())
+    @assert 0.0<ecor<=1.0
     print("Enter Omega as a fraction of mean collision frequency: ")
     Omega = parse(Float64,readline()) * collfreq
     print("Omgea = $Omega\n")
@@ -303,8 +306,10 @@ function dsmcne()
     v[:,2] += -1.5*Omega*x
 
     # Initialize variables used for evaluating collisions
-    ncell = 256                     # Number of cells
-    tau = 0.2 * (L/ncell) / mpv    # Set timestep tau
+    ncell = 256
+    # Number of cells
+        # XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+    tau = 0.123456 * 0.2 * (L/ncell) / mpv    # Set timestep tau
     print("Timestep (tau): $tau\n")
     cpertau = collfreq * tau
     print("Collisions per timestep: $cpertau\n")
@@ -339,7 +344,7 @@ function dsmcne()
         sorter!(sortData, x, -L/2, L/2)
 
         # Evaluate collisions among the particles
-        col = colider!!!(v, vrmax, selxtra,      tau, coeff, sortData)
+        col = colider!!!(v, vrmax, selxtra,      tau, coeff, sortData, ecor)
         colSum += col
 
         # After initial transient, accumulate statistical samples
@@ -398,6 +403,9 @@ function newmover!(        x    ::Array{Float64,1},
 
     #Omega = 1.0e10
 
+
+
+            #=
     v[:,1] +=  - 0.5 * tau * Omega^2 * x;
 
     Py = v[:,2] + 2*Omega*x
@@ -413,8 +421,25 @@ function newmover!(        x    ::Array{Float64,1},
     v[:,1] -= 0.5 * tau * (Omega^2 * x)
     #xdot_[i+1] -= 0.5 * tau * (Omega^2 * xtest);
     v[:,2]   = Py - 2*Omega*x
+    =#
     #
-    for i in 1:npart
+    Py = 0.0 * x # Just to allocate
+    Base.Threads.@threads for i in 1:npart
+    v[i,1] +=  - 0.5 * tau * Omega^2 * x[i];
+
+    Py[i] = v[i,2] + 2*Omega*x[i]
+    #
+    v[i,1] += tau * Omega * Py[i]
+    v[i,2]  = Py[i] - Omega * x[i] - Omega*(x[i] + tau*v[i,1])
+    #
+    x[i] += tau * v[i,1]
+    #y += tau * v[:,2]
+    #
+    v[i,1] += tau * Omega * Py[i]
+    #
+    v[i,1] -= 0.5 * tau * (Omega^2 * x[i])
+    #xdot_[i+1] -= 0.5 * tau * (Omega^2 * xtest);
+    v[i,2]   = Py[i] - 2*Omega*x[i]
         if (x[i] < -0.5*L)
             x[i] += L;
             #part.y -= mod( 1.5*Omega*Lx*t, Ly);
