@@ -1,5 +1,10 @@
 module rings
+
+using SpecialFunctions
+using Random
 """
+Units: cgs
+
 Note to self re parallelization:
 
 see https://discourse.julialang.org/t/struct-of-arrays-soa-vs-array-of-structs-aos/30015
@@ -11,8 +16,8 @@ check if it has been vectorized with @code_llvm.
 Using BenchmarkTools
 @btime
 """
+#Random.seed!(2123408012)
 
-using SpecialFunctions
 myint = Int32
 """
 ################################################################################
@@ -44,7 +49,22 @@ struct particles
     Py_::Array{Float64,1} # canonical conserved quantity equivalent to angular momentum
     Ez_::Array{Float64,1} # conserved action corresponding to vertical oscillations: (1/2)m^2 Omega^2 (zmax)^2
 end
-
+function particles(N::Int,m::Real,D::Real,
+    xlim::NTuple{2,Real}, ylim::NTuple{2,Real}, zlim::NTuple{2,Real},
+    dvx::Real, dvy::Real, dvz::Real, shear::Real )
+    #
+    m_ = (m*ones(N)...,)
+    D_ = (D*ones(N)...,)
+    x_ = xlim[1] .+ (xlim[2]-xlim[1])*Random.rand(N)
+    y_ = ylim[1] .+ (ylim[2]-ylim[1])*Random.rand(N)
+    z_ = zlim[1] .+ (zlim[2]-zlim[1])*Random.rand(N)
+    vx_= dvx*Random.randn(N)
+    vy_= dvy*Random.randn(N) + shear*x_
+    vz_= dvz*Random.randn(N)
+    Py_= zeros(N)
+    Ez_= zeros(N)
+    particles(N,m_,D_,x_,y_,z_,vx_,vy_,vz_,Py_,Ez_)
+end
 """
 ################################################################################
 struct mesh: an immutable struct for recording the size and location of
