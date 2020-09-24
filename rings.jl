@@ -13,6 +13,7 @@ Using BenchmarkTools
 """
 
 using SpecialFunctions
+myint = Int32
 """
 ################################################################################
 struct particles:
@@ -25,6 +26,7 @@ struct particles:
 
 """
 struct particles
+    N::myint # number of particles
     m_::Tuple{Vararg{Float64}} # mass
     D_::Tuple{Vararg{Float64}} # Diameter
     #Lx_  ::Array{Float64,1} # x-component of rotational angular momentum
@@ -49,9 +51,9 @@ struct mesh: an immutable struct for recording the size and location of
     the Cartesian mesh used to sort particles.
 """
 struct mesh
-    nx::Int64 # number of CELLS (not nodes) in x-dir
-    ny::Int64 # etc
-    nz::Int64
+    nx::myint # number of CELLS (not nodes) in x-dir
+    ny::myint # etc
+    nz::myint
     x_::Tuple{Vararg{Float64}} # x-location of cell boundaries (i.e. nodes)
     y_::Tuple{Vararg{Float64}} # Set as tuples, to enforce immutability
     z_::Tuple{Vararg{Float64}}
@@ -59,7 +61,7 @@ end
 """
  Nominal outer constructor. Note Hz is vertical scale height.
 """
-function mesh(nx,ny,nz,Lx::Float64,Ly::Float64,Hz::Float64)
+function mesh(nx,ny,nz,Lx::Real,Ly::Real,Hz::Real)
     if  isfinite(Ly)
         y = (collect(range(-Ly/2,Ly/2;length=ny+1))...,) # <-- this syntax constructs tuple from array
     else
@@ -73,14 +75,58 @@ function mesh(nx,ny,nz,Lx::Float64,Ly::Float64,Hz::Float64)
     )
 end
 """ Convenience 2D (x,z) constructor: """
-mesh(nx::Int64,nz::Int64,Lx::Float64,Hz::Float64) = mesh(nx,1,nz,Lx,Inf,Hz)
+mesh(nx::Int,nz::Int,Lx::Real,Hz::Real) = mesh(nx,1,nz,Lx,Inf,Hz)
 
 """
 ################################################################################
 struct sortData:
+    This is done as set of linear (flat) arrays, even tho the underlying
+    mesh is 3D.
 """
 struct sortData
-    
+    jx_   ::Array{myint,1} # putting this here avoids constantly re-allocating
+    ncell_::Array{myint,1} # ncell_[i] = no of particles in cell "i"
+    index_::Array{myint,1} # just cumsum of ncell_, really
+    Xref_::Array{myint,1}
+end
+sortData(ncell::Int,npart::Int) = sortData(
+    jx_    = zeros(myint,npart),
+    ncell_ = zeros(myint,ncell),
+    index_ = zeros(myint,ncell+1), # <-- "+1": 1st entry is 1, last entry is npart.
+    Xref_  = zeros(myint,npart)
+)
+
+function sorter!(sD::sortData, P::particles, m::mesh)
+    jx = sD.jx_ # <-- make sure this is an alias, not a copy (right?)
+    nx = m.nx; ny = m.ny; nz = m.nz, N = P.N
+    # I think there might be library utility functions available for these two...:
+    function ix(i::Int,j::Int,k::Int)
+        @assert 0 < i <= nx
+        @assert 0 < j <= ny
+        @assert 0 < k <= nz
+        i + nx*j + nx*ny*k
+    end
+    function ijk(n::Int)
+        @assert 0 < n <= nx*ny*nz
+        i  = (n -1) % nx + 1
+        jk = (n -1) ÷ nx + 1
+        j  = (jk-1) % ny + 1
+        k  = (jk-1) ÷ ny + 1
+        (i,j,k)
+    end
+    """ (1) build up jx """
+    Base.Threads.@threads for p in 1:N
+        x = P.x_[p]
+        y = P.y_[p]
+        z = P.z_[p]
+        i = sum(map(q->q<=x,m.x_))
+        @assert 0<i<=m.nx
+        j = sum(map(q->q<=y,m.y_))
+        @assert 0<j<=m.ny
+        k = sum(map(q->q<=z,m.z_))
+        @assert 0<k<=m.nz
+        jx[dp] = ix(i,j,k)
+    end
 end
 
 end

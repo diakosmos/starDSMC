@@ -424,7 +424,7 @@ function newmover!(        x    ::Array{Float64,1},
     =#
     #
     Py = 0.0 * x # Just to allocate
-    Base.Threads.@threads for i in 1:npart
+    Base.Threads.@threads for i in 1:npart # faster than @simd, I think
     v[i,1] +=  - 0.5 * tau * Omega^2 * x[i];
 
     Py[i] = v[i,2] + 2*Omega*x[i]
