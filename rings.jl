@@ -84,21 +84,27 @@ struct sortData:
     mesh is 3D.
 """
 struct sortData
-    jx_   ::Array{myint,1} # putting this here avoids constantly re-allocating
+    M     ::myint
+    N     ::myint
+    cx_   ::Array{myint,1} # cell index. putting this here avoids constantly re-allocating
     ncell_::Array{myint,1} # ncell_[i] = no of particles in cell "i"
     index_::Array{myint,1} # just cumsum of ncell_, really
     Xref_::Array{myint,1}
 end
 sortData(ncell::Int,npart::Int) = sortData(
-    jx_    = zeros(myint,npart),
+    M      = ncell,
+    N      = npart,
+    cx_    = zeros(myint,npart),
     ncell_ = zeros(myint,ncell),
-    index_ = zeros(myint,ncell+1), # <-- "+1": 1st entry is 1, last entry is npart.
+    index_ = zeros(myint,ncell),
     Xref_  = zeros(myint,npart)
 )
 
 function sorter!(sD::sortData, P::particles, m::mesh)
-    jx = sD.jx_ # <-- make sure this is an alias, not a copy (right?)
-    nx = m.nx; ny = m.ny; nz = m.nz, N = P.N
+    cx_ = sD.cx_ # <-- make sure this is an alias, not a copy (right?)
+    nx = m.nx; ny = m.ny; nz = m.nz, N = P.N, M = nx*ny*nz
+    @assert sD.M = M
+    @assert sD.N = N
     # I think there might be library utility functions available for these two...:
     function ix(i::Int,j::Int,k::Int)
         @assert 0 < i <= nx
@@ -106,15 +112,15 @@ function sorter!(sD::sortData, P::particles, m::mesh)
         @assert 0 < k <= nz
         i + nx*j + nx*ny*k
     end
-    function ijk(n::Int)
-        @assert 0 < n <= nx*ny*nz
-        i  = (n -1) % nx + 1
-        jk = (n -1) ÷ nx + 1
+    function ijk(ℓ::Int)
+        @assert 0 < ℓ <= M
+        i  = (ℓ -1) % nx + 1
+        jk = (ℓ -1) ÷ nx + 1
         j  = (jk-1) % ny + 1
         k  = (jk-1) ÷ ny + 1
         (i,j,k)
     end
-    """ (1) build up jx """
+    """ (1) build up jx, i.e., find cell for each particle """
     Base.Threads.@threads for p in 1:N
         x = P.x_[p]
         y = P.y_[p]
@@ -125,7 +131,23 @@ function sorter!(sD::sortData, P::particles, m::mesh)
         @assert 0<j<=m.ny
         k = sum(map(q->q<=z,m.z_))
         @assert 0<k<=m.nz
-        jx[dp] = ix(i,j,k)
+        cx_[dp] = ix(i,j,k)
+    end
+    """ (2) count particles in each cell """
+    sD.ncell_ *= 0 # zero it out before starting the count
+    Base.Threads.@threads for p in 1:N
+        sD.ncell_[cx_[p]] += 1
+    end
+    """ (3) build index list (cumsum) """
+    sD.index_[:] = cumsum(sD.ncell_)
+    """ (4) build cross-reference list """
+    temp_ = zeros(myint,M)
+    # Base.Threads.@threads
+    for p in 1:N
+        c = cx_[p]
+        k = sD.index_[c] + temp_[c]
+        sD.Xref[ k ] = p
+        temp_[c]    += 1
     end
 end
 
