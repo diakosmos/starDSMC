@@ -52,14 +52,14 @@ struct particles # Hmmm - should hand it a mesh, not set its ranges here.
     Ez_::Array{Float64,1} # conserved action corresponding to vertical oscillations: (1/2)m^2 Omega^2 (zmax)^2
 end
 function particles(N::Int,m::Real,D::Real,
-    xlim::NTuple{2,Real}, ylim::NTuple{2,Real}, zlim::NTuple{2,Real},
+    xlim::NTuple{2,Real}, ylim::NTuple{2,Real}, Hz::Real,
     dvx::Real, dvy::Real, dvz::Real, shear::Real )
     # Note: zlim is not really a "limit" here so much as a scale height.
     m_ = (m*ones(N)...,)
     D_ = (D*ones(N)...,)
     x_ = xlim[1] .+ (xlim[2]-xlim[1])*Random.rand(N)
     y_ = ylim[1] .+ (ylim[2]-ylim[1])*Random.rand(N)
-    z_ = zlim[1] .+ (zlim[2]-zlim[1])*Random.randn(N)
+    z_ = Hz*Random.randn(N)
     vx_= dvx*Random.randn(N)
     vy_= dvy*Random.randn(N) + shear*x_
     vz_= dvz*Random.randn(N)
@@ -201,7 +201,7 @@ function sorter!(sD::sortData, P::particles, m::mesh)
     end
 end
 
-P  = rings.particles(4234,1,1,(-1,1),(-1,1),(-1,1),9,10,11,120)
+P  = rings.particles(4321,1,1,(-1,1),(-1,1),1,9,10,11,120)
 M = rings.mesh(3,4,5,2.0,2.0,2.0)
 sD = Main.rings.sortData(P,M)
 rings.sorter!( sD, P, M )
