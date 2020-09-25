@@ -2,6 +2,7 @@ module rings
 
 using SpecialFunctions
 using Random
+using Test
 """
 Units: cgs
 
@@ -16,9 +17,10 @@ check if it has been vectorized with @code_llvm.
 Using BenchmarkTools
 @btime
 """
-#Random.seed!(2123408012)
 
-myint = Int32
+Random.seed!(2123408012)
+
+myint = Int64
 """
 ################################################################################
 struct particles:
@@ -30,7 +32,7 @@ struct particles:
     E = (1/2) m^2 Omega^2 z_max^2  and z_max = sqrt(2*E) / (m * Omega).
 
 """
-struct particles
+struct particles # Hmmm - should hand it a mesh, not set its ranges here.
     N::myint # number of particles
     m_::Tuple{Vararg{Float64}} # mass
     D_::Tuple{Vararg{Float64}} # Diameter
@@ -52,12 +54,12 @@ end
 function particles(N::Int,m::Real,D::Real,
     xlim::NTuple{2,Real}, ylim::NTuple{2,Real}, zlim::NTuple{2,Real},
     dvx::Real, dvy::Real, dvz::Real, shear::Real )
-    #
+    # Note: zlim is not really a "limit" here so much as a scale height.
     m_ = (m*ones(N)...,)
     D_ = (D*ones(N)...,)
     x_ = xlim[1] .+ (xlim[2]-xlim[1])*Random.rand(N)
     y_ = ylim[1] .+ (ylim[2]-ylim[1])*Random.rand(N)
-    z_ = zlim[1] .+ (zlim[2]-zlim[1])*Random.rand(N)
+    z_ = zlim[1] .+ (zlim[2]-zlim[1])*Random.randn(N)
     vx_= dvx*Random.randn(N)
     vy_= dvy*Random.randn(N) + shear*x_
     vz_= dvz*Random.randn(N)
@@ -111,26 +113,44 @@ struct sortData
     index_::Array{myint,1} # just cumsum of ncell_, really
     Xref_::Array{myint,1}
 end
-sortData(ncell::Int,npart::Int) = sortData(
-    M      = ncell,
-    N      = npart,
-    cx_    = zeros(myint,npart),
-    ncell_ = zeros(myint,ncell),
-    index_ = zeros(myint,ncell),
-    Xref_  = zeros(myint,npart)
-)
+function sortData(ncell::Int64,npart::Int64)
+    sortData(
+        ncell,
+        npart,
+        zeros(myint,npart),
+        zeros(myint,ncell),
+        zeros(myint,ncell),
+        zeros(myint,npart)
+    )
+end
+function sortData(p::particles, m::mesh)
+    ncell = m.nx * m.ny * m.nz
+    npart = p.N
+    sortData(
+        ncell,
+        npart,
+        zeros(myint,npart),
+        zeros(myint,ncell),
+        zeros(myint,ncell),
+        zeros(myint,npart)
+    )
+end
+""" convenience function so argument order doesn't matter: """
+function sortData(m::mesh,p::particles)
+    sortData(p,m)
+end
 
 function sorter!(sD::sortData, P::particles, m::mesh)
     cx_ = sD.cx_ # <-- make sure this is an alias, not a copy (right?)
-    nx = m.nx; ny = m.ny; nz = m.nz, N = P.N, M = nx*ny*nz
-    @assert sD.M = M
-    @assert sD.N = N
+    nx = m.nx; ny = m.ny; nz = m.nz; N = P.N; M = nx*ny*nz
+    @assert sD.M == M
+    @assert sD.N == N
     # I think there might be library utility functions available for these two...:
     function ix(i::Int,j::Int,k::Int)
         @assert 0 < i <= nx
         @assert 0 < j <= ny
         @assert 0 < k <= nz
-        i + nx*j + nx*ny*k
+        i + nx*(j-1) + nx*ny*(k-1)
     end
     function ijk(ℓ::Int)
         @assert 0 < ℓ <= M
@@ -141,34 +161,49 @@ function sorter!(sD::sortData, P::particles, m::mesh)
         (i,j,k)
     end
     """ (1) build up jx, i.e., find cell for each particle """
-    Base.Threads.@threads for p in 1:N
+    #Base.Threads.@threads
+    for p in 1:N
         x = P.x_[p]
         y = P.y_[p]
         z = P.z_[p]
         i = sum(map(q->q<=x,m.x_))
-        @assert 0<i<=m.nx
+        #@assert 0<i<=m.nx
         j = sum(map(q->q<=y,m.y_))
-        @assert 0<j<=m.ny
+        #@assert 0<j<=m.ny
         k = sum(map(q->q<=z,m.z_))
-        @assert 0<k<=m.nz
-        cx_[dp] = ix(i,j,k)
+        #@assert 0<k<=m.nz
+        cx_[p] = ix(i,j,k)
     end
     """ (2) count particles in each cell """
-    sD.ncell_ *= 0 # zero it out before starting the count
-    Base.Threads.@threads for p in 1:N
+    sD.ncell_[:] .= 0 # zero it out before starting the count
+    #Base.Threads.@threads
+    for p in 1:N
         sD.ncell_[cx_[p]] += 1
     end
+    nc=sD.ncell_
+    print("sD.ncell_: $nc\n")
     """ (3) build index list (cumsum) """
-    sD.index_[:] = cumsum(sD.ncell_)
+    sD.index_[1] = 1
+    sD.index_[2:end] = 1 .+ cumsum(sD.ncell_)[1:end-1]
+    cs=sD.index_
+    print("sD.index_: $cs\n")
     """ (4) build cross-reference list """
     temp_ = zeros(myint,M)
     # Base.Threads.@threads
     for p in 1:N
         c = cx_[p]
         k = sD.index_[c] + temp_[c]
-        sD.Xref[ k ] = p
+        sD.Xref_[ k ] = p
+        #X = sD.Xref_
+        #print("p: $p,  c: $c,  k: $k\n" )
+        #print("sD.Xref_: $X\n")
         temp_[c]    += 1
     end
 end
+
+P  = rings.particles(4234,1,1,(-1,1),(-1,1),(-1,1),9,10,11,120)
+M = rings.mesh(3,4,5,2.0,2.0,2.0)
+sD = Main.rings.sortData(P,M)
+rings.sorter!( sD, P, M )
 
 end
