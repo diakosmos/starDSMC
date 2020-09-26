@@ -18,9 +18,52 @@ Using BenchmarkTools
 @btime
 """
 
-Random.seed!(2123408012)
+Random.seed!(21237428012)
 
 myint = Int64
+"""
+################################################################################
+struct mesh: an immutable struct for recording the size and location of
+    the Cartesian mesh used to sort particles.
+
+    Also, stores continuum quantities.
+"""
+struct mesh
+    nx::myint # number of CELLS (not nodes) in x-dir
+    ny::myint # etc
+    nz::myint
+    x_::Tuple{Vararg{Float64}} # x-location of cell boundaries (i.e. nodes)
+    y_::Tuple{Vararg{Float64}} # Set as tuples, to enforce immutability
+    z_::Tuple{Vararg{Float64}}
+    Hz::Float64 # scale ht used to set z_.
+    #
+    Vc_::Array{Float64,3} # cell volume
+    mfp_::Array{Float64,3} # mean-free-path (estimate)
+    collfreq_::Array{Float64,3} # collision frequency (estimate)
+end
+"""
+ Nominal outer constructor. Note Hz is vertical scale height.
+"""
+function mesh(nx,ny,nz,Lx::Real,Ly::Real,Hz::Real)
+    if  isfinite(Ly)
+        y = (collect(range(-Ly/2,Ly/2;length=ny+1))...,) # <-- this syntax constructs tuple from array
+    else
+        @assert ny == 1
+        y = (-Inf,Inf)
+    end
+    mesh( nx, ny, nz,
+        (collect(range(-Lx/2,Lx/2;length=nx+1))...,),
+        y,
+        (Hz * SpecialFunctions.erfinv.(collect(range(-1.0,1.0;length=nz+1)))...,),
+        Hz,
+        zeros(nx,ny,nz),
+        zeros(nx,ny,nz),
+        zeros(nx,ny,nz),
+    )
+end
+""" Convenience 2D (x,z) constructor: """
+mesh(nx::Int,nz::Int,Lx::Real,Hz::Real) = mesh(nx,1,nz,Lx,Inf,Hz)
+
 """
 ################################################################################
 struct particles:
@@ -67,37 +110,35 @@ function particles(N::Int,m::Real,D::Real,
     Ez_= zeros(N)
     particles(N,m_,D_,x_,y_,z_,vx_,vy_,vz_,Py_,Ez_)
 end
-"""
-################################################################################
-struct mesh: an immutable struct for recording the size and location of
-    the Cartesian mesh used to sort particles.
-"""
-struct mesh
-    nx::myint # number of CELLS (not nodes) in x-dir
-    ny::myint # etc
-    nz::myint
-    x_::Tuple{Vararg{Float64}} # x-location of cell boundaries (i.e. nodes)
-    y_::Tuple{Vararg{Float64}} # Set as tuples, to enforce immutability
-    z_::Tuple{Vararg{Float64}}
+function particles(N::Int,m::Real,D::Real,dv::Real,shear::Real,M::mesh)
+    xx = (M.x_[1],M.x_[end])
+    yy = (M.y_[1],M.y_[end])
+    Hz = M.Hz
+    particles(N,m,D,xx,yy,Hz,dv,dv,dv,shear)
 end
+
 """
- Nominal outer constructor. Note Hz is vertical scale height.
+mesh+particles functions
 """
-function mesh(nx,ny,nz,Lx::Real,Ly::Real,Hz::Real)
-    if  isfinite(Ly)
-        y = (collect(range(-Ly/2,Ly/2;length=ny+1))...,) # <-- this syntax constructs tuple from array
-    else
-        @assert ny == 1
-        y = (-Inf,Inf)
+
+function getcellvolume!(M::mesh)
+    function dif(x)
+        diff(collect(x))
     end
-    mesh( nx, ny, nz,
-        (collect(range(-Lx/2,Lx/2;length=nx+1))...,),
-        y,
-        (Hz * SpecialFunctions.erfinv.(collect(range(-1.0,1.0;length=nz+1)))...,),
-    )
+    for ℓ in eachindex(M.Vc_)
+        i  = (ℓ -1) % M.nx + 1
+        jk = (ℓ -1) ÷ M.nx + 1
+        j  = (jk-1) % M.ny + 1
+        k  = (jk-1) ÷ M.ny + 1
+        M.Vc_[ℓ] = dif(M.x_)[i] * dif(M.y_)[j] * dif(M.z_)[k]
+    end
 end
-""" Convenience 2D (x,z) constructor: """
-mesh(nx::Int,nz::Int,Lx::Real,Hz::Real) = mesh(nx,1,nz,Lx,Inf,Hz)
+
+function getcollfreq!(M::mesh,P::particles)
+    for i in eachindex(M.collfreq_)
+        M.collfreq_[i] = M.Vc_[i] + 3.5 #not really
+    end
+end
 
 """
 ################################################################################
@@ -113,7 +154,7 @@ struct sortData
     index_::Array{myint,1} # just cumsum of ncell_, really
     Xref_::Array{myint,1}
 end
-function sortData(ncell::Int64,npart::Int64)
+#=function sortData(ncell::Int64,npart::Int64)
     sortData(
         ncell,
         npart,
@@ -122,7 +163,7 @@ function sortData(ncell::Int64,npart::Int64)
         zeros(myint,ncell),
         zeros(myint,npart)
     )
-end
+end =#
 function sortData(p::particles, m::mesh)
     ncell = m.nx * m.ny * m.nz
     npart = p.N
@@ -161,8 +202,7 @@ function sorter!(sD::sortData, P::particles, m::mesh)
         (i,j,k)
     end
     """ (1) build up jx, i.e., find cell for each particle """
-    #Base.Threads.@threads
-    for p in 1:N
+    Base.Threads.@threads for p in 1:N
         x = P.x_[p]
         y = P.y_[p]
         z = P.z_[p]
@@ -176,12 +216,13 @@ function sorter!(sD::sortData, P::particles, m::mesh)
     end
     """ (2) count particles in each cell """
     sD.ncell_[:] .= 0 # zero it out before starting the count
-    #Base.Threads.@threads
-    for p in 1:N
+    @simd for p in 1:N
         sD.ncell_[cx_[p]] += 1
     end
     nc=sD.ncell_
     print("sD.ncell_: $nc\n")
+    s = sum(nc)
+    print("sum: $s\n")
     """ (3) build index list (cumsum) """
     sD.index_[1] = 1
     sD.index_[2:end] = 1 .+ cumsum(sD.ncell_)[1:end-1]
@@ -189,8 +230,8 @@ function sorter!(sD::sortData, P::particles, m::mesh)
     print("sD.index_: $cs\n")
     """ (4) build cross-reference list """
     temp_ = zeros(myint,M)
-    # Base.Threads.@threads
-    for p in 1:N
+    #Base.Threads.@threads
+    @simd for p in 1:N
         c = cx_[p]
         k = sD.index_[c] + temp_[c]
         sD.Xref_[ k ] = p
@@ -201,9 +242,13 @@ function sorter!(sD::sortData, P::particles, m::mesh)
     end
 end
 
-P  = rings.particles(4321,1,1,(-1,1),(-1,1),1,9,10,11,120)
-M = rings.mesh(3,4,5,2.0,2.0,2.0)
-sD = Main.rings.sortData(P,M)
-rings.sorter!( sD, P, M )
-
+""" Will move this eventually...."""
+function main()
+    M = rings.mesh(3,4,5,2.0,2.0,2.0)
+    P  = rings.particles(4321,1,1,1,1.5,M)
+    sD = Main.rings.sortData(P,M)
+    rings.sorter!( sD, P, M )
+    #
+    # Now, to set timestep, need to estimate max collision freq.
+end
 end
