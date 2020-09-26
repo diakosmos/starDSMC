@@ -424,7 +424,8 @@ function newmover!(        x    ::Array{Float64,1},
     =#
     #
     Py = 0.0 * x # Just to allocate
-    Base.Threads.@threads for i in 1:npart # faster than @simd, I think
+    #Base.Threads.@threads
+    for i in 1:npart # faster than @simd, I think
     v[i,1] +=  - 0.5 * tau * Omega^2 * x[i];
 
     Py[i] = v[i,2] + 2*Omega*x[i]
@@ -440,15 +441,30 @@ function newmover!(        x    ::Array{Float64,1},
     v[i,1] -= 0.5 * tau * (Omega^2 * x[i])
     #xdot_[i+1] -= 0.5 * tau * (Omega^2 * xtest);
     v[i,2]   = Py[i] - 2*Omega*x[i]
-        if (x[i] < -0.5*L)
+
+    #function shift!(x,L1,L2)
+    L1=-L/2;L2=L/2
+        if x[i]<L1 || x[i]>=L2
+            L0 = L2-L1
+            (k,xx) = fldmod(x[i]-L1,L0)
+            x[i] = L1 + xx
+            #xtemp = L1 + xx
+            v[i,2] += k * 1.5*Omega*L0
+            #vtemp = v[i,2] + k * 1.5*Omega*L0
+        end
+       #=if (x[i] < -0.5*L)
             x[i] += L;
+            @assert x[i] ≈ xtemp
             #part.y -= mod( 1.5*Omega*Lx*t, Ly);
-            v[i,2] -= 1.5 * Omega * L;
+            v[i,2] -= 1.5 * Omega * L
+            @assert v[i,2] ≈ vtemp
         elseif (x[i] ≥ 0.5*L)
             x[i] -= L;
+            @assert x[i] ≈ xtemp
             #part.y += mod( 1.5*Omega*Lx*t, Ly);
-            v[i,2] += 1.5 * Omega * L;
-        end
+            v[i,2] += 1.5 * Omega * L
+            @assert v[i,2] ≈ vtemp
+        end=#
         #part.y = mod( part.y,Ly);
     end
     return (x, v, [0.0,0.0],0.0)

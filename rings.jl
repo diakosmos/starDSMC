@@ -77,8 +77,12 @@ struct particles:
 """
 struct particles # Hmmm - should hand it a mesh, not set its ranges here.
     N::myint # number of particles
-    m_::Tuple{Vararg{Float64}} # mass
-    D_::Tuple{Vararg{Float64}} # Diameter
+    Omega::Float64 # epicyclic freq
+    shear::Float64 # nominally -(3/2)Ω
+    #m_::Tuple{Vararg{Float64}} # mass
+    m::Float64
+    #D_::Tuple{Vararg{Float64}} # Diameter
+    D::Float64
     #Lx_  ::Array{Float64,1} # x-component of rotational angular momentum
     #Ly_  ::Array{Float64,1}
     #Lx_  ::Array{Float64,1}
@@ -94,9 +98,9 @@ struct particles # Hmmm - should hand it a mesh, not set its ranges here.
     Py_::Array{Float64,1} # canonical conserved quantity equivalent to angular momentum
     Ez_::Array{Float64,1} # conserved action corresponding to vertical oscillations: (1/2)m^2 Omega^2 (zmax)^2
 end
-function particles(N::Int,m::Real,D::Real,
+function particles(N::Int,Omega::Float64,shear::Float64,m::Real,D::Real,
     xlim::NTuple{2,Real}, ylim::NTuple{2,Real}, Hz::Real,
-    dvx::Real, dvy::Real, dvz::Real, shear::Real )
+    dvx::Real, dvy::Real, dvz::Real )
     # Note: zlim is not really a "limit" here so much as a scale height.
     m_ = (m*ones(N)...,)
     D_ = (D*ones(N)...,)
@@ -108,13 +112,15 @@ function particles(N::Int,m::Real,D::Real,
     vz_= dvz*Random.randn(N)
     Py_= zeros(N)
     Ez_= zeros(N)
-    particles(N,m_,D_,x_,y_,z_,vx_,vy_,vz_,Py_,Ez_)
+    #particles(N,m_,D_,x_,y_,z_,vx_,vy_,vz_,Py_,Ez_)
+    particles(N,Omega,shear,m,D,x_,y_,z_,vx_,vy_,vz_,Py_,Ez_)
 end
-function particles(N::Int,m::Real,D::Real,dv::Real,shear::Real,M::mesh)
+function particles(N::Int,Omega::Float64,shear::Float64,m::Real,D::Real,
+    dv::Real,M::mesh)
     xx = (M.x_[1],M.x_[end])
     yy = (M.y_[1],M.y_[end])
     Hz = M.Hz
-    particles(N,m,D,xx,yy,Hz,dv,dv,dv,shear)
+    particles(N,Omega,shear,m,D,xx,yy,Hz,dv,dv,dv)
 end
 
 """
@@ -133,6 +139,7 @@ function getcellvolume!(M::mesh)
         M.Vc_[ℓ] = dif(M.x_)[i] * dif(M.y_)[j] * dif(M.z_)[k]
     end
 end
+
 
 function getcollfreq!(M::mesh,P::particles)
     for i in eachindex(M.collfreq_)
@@ -242,12 +249,43 @@ function sorter!(sD::sortData, P::particles, m::mesh)
     end
 end
 
+function getstuff!(M::mesh,sD::sortData)
+    getcellvolume!(M)
+    for i in eachindex(M.collfreq_)
+        D = 1.0 # not really
+        M.mfp_[i] = M.Vc_[i] /(√2.0 * π * D^2 * sD.ncell_[i])
+    end
+end
+
+function move!(P::particles,M::mesh,tau::Float64)
+    Ω = P.Omega; x_=P.x_; y_=P.y_; z_=P.z_; vx_ = P.vx_; vy_=P.vy_; vz_=P.vz_; Py_=P.Py_
+    xL = M.x_[1]; xU = M.x_[end]; Lx = xU-xL
+    @simd for i in eachindex(P.x_) # can use any of P's 1D length-N arrays.
+        vx_[i] += -0.5 * tau * Ω^2 * x_[i]
+        Py_[i]  =  vy_[i] + 2Ω*x_[i]
+        vx_[i] +=  tau * Ω * Py_[i]
+        vy_[i]  =  Py_[i] - Ω * x_[i] - Ω*(x_[i] + tau*vx_[i])
+        x_[i]  +=  tau * vx_[i]
+        vx_[i] +=  tau * Ω * Py_[i]
+        vx_[i] -=  0.5 * tau * (Ω^2 * x_[i])
+        vy_[i]  =  Py_[i] - 2Ω*x_[i]
+        if x_[i]<xL || x_[i]>=xU # could remove this conditional, actually...
+            (k,xx) = fldmod(x_[i]-xL,Lx)
+            x_[i] = xL + xx
+            vy_[i] += k * 1.5*Ω*Lx
+        end#if
+    end#for
+end#function
+
 """ Will move this eventually...."""
 function main()
+    Omega = 1.0e-3
+    shear = -1.5*Omega
     M = rings.mesh(3,4,5,2.0,2.0,2.0)
-    P  = rings.particles(4321,1,1,1,1.5,M)
+    P  = rings.particles(4321,Omega,shear,1.0,1.0,1.5,M)
     sD = Main.rings.sortData(P,M)
     rings.sorter!( sD, P, M )
+    rings.move!(P,M,1.0e-3)
     #
     # Now, to set timestep, need to estimate max collision freq.
 end
