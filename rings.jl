@@ -490,9 +490,9 @@ function main()
     rings.getcoeff!(M,P,sD,Δt)
     rings.move!(P,M,Δt)
     rings.sorter!(sD, P, M)
-    ncoll = rings.collide!(P,M,sD,Δt;ecor=0.9)
+    ncoll = rings.collide!(P,M,sD,Δt;ecor=0.90)
     print("Timestep: $i  Collisions: $ncoll\n")
-    if i%1000 == 1
+    if i%100 == 1
         display(plot(P.x_,P.vy_,seriestype=:scatter))
     end
     end
