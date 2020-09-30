@@ -46,6 +46,8 @@ TESTS:
     + time step << orbital timescale
     + number of simulated particles per cell > 20
     + background (shear) velocity difference across cell < peculiar velocity v'
+    + mfp >> (particle diameter)
+    + no. of particles in (mfp)^3 (>>1? Or, irrelevant?)
 """
 
 fiducials = (
@@ -181,7 +183,8 @@ function particles(N::Int,Neff::Float64,Omega::Float64,shear::Float64,m::Real,D:
     dv::Real,M::mesh)
     xx = (M.x_[1],M.x_[end])
     yy = (M.y_[1],M.y_[end])
-    Hz = M.Hz
+    Hz = M.Hz #NO!
+    Hz = abs(dv/Omega)
     particles(N,Neff,Omega,shear,m,D,xx,yy,Hz,dv,dv,dv)
 end
 
@@ -248,13 +251,13 @@ function sorter!(sD::sortData, P::particles, m::mesh)
         (i,j,k)
     end
     """ (1) build up jx, i.e., find cell for each particle """
-    Base.Threads.@threads for p in 1:N
+    Base.Threads.@threads     for p in 1:N
         x = P.x_[p]
         y = P.y_[p]
         z = P.z_[p]
         i = sum(map(q->q<=x,m.x_))
         #@assert 0<i<=m.nx
-        j = sum(map(q->q<=y,m.y_))
+        j = 1 #sum(map(q->q<=y,m.y_))
         #@assert 0<j<=m.ny
         k = sum(map(q->q<=z,m.z_))
         #@assert 0<k<=m.nz
@@ -412,12 +415,23 @@ function move!(P::particles,M::mesh,tau::Float64)
     end
 end#function
 
-function collide!(P::particles,M::mesh,sD::sortData, Dt::Float64; ecor::Float64=1.0)
+function collide!(P::particles,M::mesh,sD::sortData, Dt::Float64; ecor::Float64=1.0,
+    usephenom::Bool=false)
     # Note: ecor = elastic coefficient of (restition?) anyway, btwn 0 & 1.
     nx=M.nx; ny=M.ny; nz=M.nz; ncell=nx*ny*nz; vx_=P.vx_; vy_=P.vy_; vz_=P.vz_
     coll=0
+    """
+    phrest: phenomenological coefficient of restitution
+    """
+    function phcr(v::Float64;vc=0.029,p=0.19)
+        if v<=vc
+            return 1.0
+        else
+            return (v/vc)^p
+        end
+    end
     getcoeff!(M,P,sD,Dt)
-    for jcell in 1:ncell
+    Threads.@threads for jcell in 1:ncell
         no = sD.ncell_[jcell] # get number ("no") in cell
         if no>1
             select = M.coeff_[jcell] * no * (no-1) * 0.2
@@ -450,11 +464,14 @@ function collide!(P::particles,M::mesh,sD::sortData, Dt::Float64; ecor::Float64=
                     sin_th = sqrt(1.0 - cos_th^2)       #   collision angle theta
                     phi = 2π * rand()                   # Collsion angle phi
                     vrel = zeros(3)
-                    vrel[1] = ecor * cr*cos_th                 # Compute post-collision
-                    vrel[2] = ecor * cr*sin_th * cos(phi)      #    relative velocity
-                    vrel[3] = ecor * cr*sin_th * sin(phi)
-                    (vx_[ip1], vy_[ip1], vz_[ip1]) = vcm + 0.5 * vrel         # Update post-collision
-                    (vx_[ip2], vy_[ip2], vz_[ip2]) = vcm - 0.5 * vrel         #    velocities
+                    vrel[1] = cr*cos_th                 # Compute post-collision
+                    vrel[2] = cr*sin_th * cos(phi)      #    relative velocity
+                    vrel[3] = cr*sin_th * sin(phi)
+                    if usephenom
+                        ecor = phcr(norm(vrel))
+                    end
+                    (vx_[ip1], vy_[ip1], vz_[ip1]) = vcm + 0.5 * ecor * vrel         # Update post-collision
+                    (vx_[ip2], vy_[ip2], vz_[ip2]) = vcm - 0.5 * ecor * vrel         #    velocities
                 end
             end
         M.crmax_[jcell] = crm
@@ -466,12 +483,12 @@ end
 """ Will move this eventually...."""
 function main()
     # number of cells in z-dir, in x-dir, and total number of particles:
-    Nz = 5; Nx = 256; Npart = 123456
+    Nz = 13; Nx = 512; Npart = 1234567
     #
     f = fiducials
-    Ω = f.Ω; D = f.D; m=f.m; v′=f.v′; H=f.H
+    Ω = f.Ω; D = f.D * 1.0; m=f.m; v′=f.v′; H=f.H
     s = -1.5 * Ω # shear
-    Δx = 5.0 * H # Range in x-dir in terms of vertical scale heights
+    Δx = 100.0 * H # Range in x-dir in terms of vertical scale heights
     Δt = 0.1 / Ω
 
     Nreal = Δx * 2*π*f.R₀ * f.N
@@ -479,7 +496,7 @@ function main()
     print("Each simulated particle represents $Neff real particles.\n")
 
     M = rings.mesh(Nx,Nz, Δx, H)
-    P=rings.particles( Npart , Neff, Ω , s , m , D , v′*0.1 , M )
+    P=rings.particles( Npart , Neff, Ω , s , m , D , v′ , M )
     sD = Main.rings.sortData(P,M)
 
     #for i in 1:1
@@ -490,9 +507,14 @@ function main()
     rings.getcoeff!(M,P,sD,Δt)
     rings.move!(P,M,Δt)
     rings.sorter!(sD, P, M)
-    ncoll = rings.collide!(P,M,sD,Δt;ecor=0.90)
-    print("Timestep: $i  Collisions: $ncoll\n")
-    if i%100 == 1
+    ncoll = rings.collide!(P,M,sD,Δt;usephenom=true)#ecor=0.90)
+    print("Timestep: $i  Collisions: $ncoll.       ")
+    cfreq = (ncoll*1.0)/(Npart*1.0) * 1.0/Δt
+    omegaovercfreq = Ω/cfreq
+    print("Ω / (collision frequency) = $omegaovercfreq\n")
+    if i%10 == 1
+        display(plot(sD.ncell_[(6*512):(7*512)]))
+        display(plot(P.z_,P.vz_,seriestype=:scatter))
         display(plot(P.x_,P.vy_,seriestype=:scatter))
     end
     end
