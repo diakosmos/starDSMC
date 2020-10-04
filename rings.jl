@@ -104,6 +104,9 @@ function mesh(nx,ny,nz,Lx::Real,Ly::Real,Hz::Real)
         @assert ny == 1
         y = (-Inf,Inf)
     end
+    print("Boundaries in vertical direction: \n")
+    print((Hz * SpecialFunctions.erfinv.(collect(range(-1.0,1.0;length=nz+1)))...,))
+    print("\n")
     mesh( nx, ny, nz,
         (collect(range(-Lx/2,Lx/2;length=nx+1))...,),
         y,
@@ -422,13 +425,20 @@ function collide!(P::particles,M::mesh,sD::sortData, Dt::Float64; ecor::Float64=
     coll=0
     """
     phrest: phenomenological coefficient of restitution
+    XXX PROBLEM: *actually* the velocity here is the NORMAL velocity,
+    which is not the same as the relative velocity, b/c collisions are
+    not generally head-on!!! FIX.
     """
     function phcr(v::Float64;vc=0.029,p=0.19)
         if v<=vc
             return 1.0
         else
-            return (v/vc)^p
+            return (v/vc)^(-p)
         end
+    end
+    function pinch(x::Float64)
+        z = 2.0*x-1.0
+        return acos(-z)/π
     end
     getcoeff!(M,P,sD,Dt)
     Threads.@threads for jcell in 1:ncell
@@ -437,7 +447,7 @@ function collide!(P::particles,M::mesh,sD::sortData, Dt::Float64; ecor::Float64=
             select = M.coeff_[jcell] * no * (no-1) * 0.2
                 # M.crmax_[jcell] + M.selxtra[jcell]
             nsel = Int64(floor(select))
-            crm = M.crmax_[jcell]
+            crm = M.crmax_[jcell] # XXX you never re-calculate this!!!
             # Loop over total number of candidate collision pairs
             for isel in 1:nsel
                 k1 = Int64(floor(rand()*no))
@@ -460,15 +470,15 @@ function collide!(P::particles,M::mesh,sD::sortData, Dt::Float64; ecor::Float64=
                     vcm = 0.5*[vx_[ip1] + vx_[ip2],
                                 vy_[ip1] + vy_[ip2],
                                 vz_[ip1] + vz_[ip2]]     # Center-of-mass velocity
-                    cos_th = 1 - 2*rand()               # Cosine and sine of
+                    cos_th = 1 - 2*pinch(pinch(pinch(pinch(pinch(rand())))))               # Cosine and sine of
                     sin_th = sqrt(1.0 - cos_th^2)       #   collision angle theta
                     phi = 2π * rand()                   # Collsion angle phi
                     vrel = zeros(3)
-                    vrel[1] = cr*cos_th                 # Compute post-collision
+                    vrel[3] = cr*cos_th                 # Compute post-collision
                     vrel[2] = cr*sin_th * cos(phi)      #    relative velocity
-                    vrel[3] = cr*sin_th * sin(phi)
+                    vrel[1] = cr*sin_th * sin(phi)
                     if usephenom
-                        ecor = phcr(norm(vrel))
+                        ecor = phcr(norm(vrel);vc=0.5)
                     end
                     (vx_[ip1], vy_[ip1], vz_[ip1]) = vcm + 0.5 * ecor * vrel         # Update post-collision
                     (vx_[ip2], vy_[ip2], vz_[ip2]) = vcm - 0.5 * ecor * vrel         #    velocities
@@ -486,7 +496,7 @@ function main()
     Nz = 13; Nx = 512; Npart = 1234567
     #
     f = fiducials
-    Ω = f.Ω; D = f.D * 1.0; m=f.m; v′=f.v′; H=f.H
+    Ω = f.Ω; D = f.D * 0.65; m=f.m; v′=f.v′; H=f.H
     s = -1.5 * Ω # shear
     Δx = 100.0 * H # Range in x-dir in terms of vertical scale heights
     Δt = 0.1 / Ω
@@ -495,7 +505,7 @@ function main()
     Neff  = Nreal / Npart
     print("Each simulated particle represents $Neff real particles.\n")
 
-    M = rings.mesh(Nx,Nz, Δx, H)
+    M = rings.mesh(Nx,Nz, Δx, 4*H)
     P=rings.particles( Npart , Neff, Ω , s , m , D , v′ , M )
     sD = Main.rings.sortData(P,M)
 
@@ -515,6 +525,7 @@ function main()
     if i%10 == 1
         display(plot(sD.ncell_[(6*512):(7*512)]))
         display(plot(P.z_,P.vz_,seriestype=:scatter))
+        display(plot(P.x_,P.vx_,seriestype=:scatter))
         display(plot(P.x_,P.vy_,seriestype=:scatter))
     end
     end
