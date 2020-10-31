@@ -199,12 +199,17 @@ struct sortData:
     mesh is 3D.
 """
 struct sortData
-    M     ::myint
-    N     ::myint
+    M     ::myint # re M and N: (1) should rename to ncell and npart, or
+    N     ::myint # (2) just get rid of. (It appears I don't really need them.)
+    #
+    # particle arrays:
     cx_   ::Array{myint,1} # cell index. putting this here avoids constantly re-allocating
-    ncell_::Array{myint,1} # ncell_[i] = no of particles in cell "i"
-    index_::Array{myint,1} # just cumsum of ncell_, really
     Xref_::Array{myint,1}
+    #
+    # Mesh arrays:
+    ncell_::Array{myint,3} # ncell_[i] = no of particles in cell "i"
+    index_::Array{myint,3} # just cumsum of ncell_, really
+    #
 end
 #=function sortData(ncell::Int64,npart::Int64)
     sortData(
@@ -223,9 +228,9 @@ function sortData(p::particles, m::mesh)
         ncell,
         npart,
         zeros(myint,npart),
-        zeros(myint,ncell),
-        zeros(myint,ncell),
-        zeros(myint,npart)
+        zeros(myint,npart),
+        zeros(myint,m.nx, m.ny, m.nz), #ncell),
+        zeros(myint,m.nx, m.ny, m.nz), #ncell),
     )
 end
 """ convenience function so argument order doesn't matter: """
@@ -279,7 +284,7 @@ function sorter!(sD::sortData, P::particles, m::mesh)
     #print("sum: $s\n")
     """ (3) build index list (cumsum) """
     sD.index_[1] = 1
-    sD.index_[2:end] = 1 .+ cumsum(sD.ncell_)[1:end-1]
+    sD.index_[2:end] = 1 .+ cumsum(sD.ncell_[:])[1:end-1]
     cs=sD.index_
     #print("sD.index_: $cs\n")
     """ (4) build cross-reference list """
@@ -523,7 +528,9 @@ function main()
     omegaovercfreq = Ω/cfreq
     print("Ω / (collision frequency) = $omegaovercfreq\n")
     if i%10 == 1
-        display(plot(sD.ncell_[(6*512):(7*512)]))
+        xx = [i for i in M.x_]
+        xm = 0.5 * ( xx[1:end-1]+xx[2:end])
+        display(plot(xm,sD.ncell_[:,1,5:9]))
         display(plot(P.z_,P.vz_,seriestype=:scatter))
         display(plot(P.x_,P.vx_,seriestype=:scatter))
         display(plot(P.x_,P.vy_,seriestype=:scatter))
