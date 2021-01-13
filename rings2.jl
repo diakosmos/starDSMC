@@ -63,6 +63,10 @@ fiducials = (
     H = 1.0e3, # cm
     v′= 0.1785, # cm/s (peculiar velocity)
     R₀= 1.06e10, # orbital radius
+    #
+    xmin = 1.0e2, #floor for 1/x^4 to avoid divergence
+    ablah = 1.0e-5,
+    xH = 1.0e4,
 )
 
 Random.seed!(21237428012)
@@ -387,8 +391,20 @@ function move!(P::particles,M::mesh,tau::Float64)
         Py_[i]  =  vy_[i] + 2Ω*x_[i] # <-- since this is conserved, shouldn't be re-setting it each iteration.
         vx_[i] +=  tau * Ω * Py_[i]
         vy_[i]  =  Py_[i] - Ω * x_[i] - Ω*(x_[i] + tau*vx_[i])
+        if x_[i] > 0
+            x = max(x_[i],xmin)
+            a = ablah * (xH/x)^4
+            vy_[i] += a * tau
+        end
+        if x_[i] < 0
+            x = min(x_[i],-xmin)
+            a = ablah * (xH/x)^4
+            vy_[i] -= a * tau
+        end
+        """ """
         x_[i]  +=  tau * vx_[i]
         y_[i]  +=  tau * vy_[i]
+        """ """
         vx_[i] +=  tau * Ω * Py_[i]
         vx_[i] -=  0.5 * tau * (Ω^2 * x_[i])
         vy_[i]  =  Py_[i] - 2Ω*x_[i]
@@ -398,6 +414,16 @@ function move!(P::particles,M::mesh,tau::Float64)
             vy_[i] += k * 1.5*Ω*Lx #* 2.0/1.5
             Py_[i]  =  vy_[i] + 2Ω*x_[i] # Change?
         end#if
+        if x_[i] > 0
+            x = max(x_[i],xmin)
+            a = ablah * (xH/x)^4
+            vy_[i] += a * tau
+        end
+        if x_[i] < 0
+            x = min(x_[i],-xmin)
+            a = ablah * (xH/x)^4
+            vy_[i] -= a * tau
+        end
     end#for
     # z motion (should combine)
     @simd for i in eachindex(P.z_)
