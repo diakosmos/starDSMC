@@ -65,8 +65,9 @@ fiducials = (
     R₀= 1.06e10, # orbital radius
     #
     xmin = 1.0e2, #floor for 1/x^4 to avoid divergence
-    ablah = 1.0e-5,
+    ablah = 0.0*1.0e-10,
     xH = 1.0e4,
+    Mmoon = 1.0e17,
 )
 
 Random.seed!(21237428012)
@@ -96,6 +97,8 @@ struct mesh
     crmax_::Array{Float64,3} # estimate of maximum relative speed in a cell
     selxtra_::Array{Float64,3} # extra selections carried over from last timestep
     coeff_::Array{Float64,3} # coeff related to collision freq in a cell
+    #
+    t::Array{Float64,1} # global time
 end
 """
  Nominal outer constructor. Note Hz is vertical scale height.
@@ -123,6 +126,7 @@ function mesh(nx,ny,nz,Lx::Real,Ly::Real,Hz::Real)
         zeros(nx,ny,nz), # crmax_
         zeros(nx,ny,nz), # selxtra_
         zeros(nx,ny,nz), # coeff_
+        [0.0,], # time starts at 0.0
     )
 end
 """ Convenience 2D (x,z) constructor: """
@@ -382,24 +386,29 @@ end
 """
 
 function move!(P::particles,M::mesh,tau::Float64)
+    G = 6.67e-8
     Ω = P.Omega; x_=P.x_; y_=P.y_; z_=P.z_; vx_ = P.vx_; vy_=P.vy_; vz_=P.vz_; Py_=P.Py_
     xL = M.x_[1]; xU = M.x_[end]; Lx = xU-xL; Ez_ = P.Ez_; Thz_ = P.Thz_
     m = P.m
+    ablah = fiducials.ablah * min(1,M.t[1] * Ω / 100) # Turn on force gradually
+    xmin = fiducials.xmin
+    xH = fiducials.xH
+    x00 = 0.0 #2.0e4
     # xy motion:
     @simd for i in eachindex(P.x_) # can use any of P's 1D length-N arrays.
         vx_[i] += -0.5 * tau * Ω^2 * x_[i]
         Py_[i]  =  vy_[i] + 2Ω*x_[i] # <-- since this is conserved, shouldn't be re-setting it each iteration.
         vx_[i] +=  tau * Ω * Py_[i]
         vy_[i]  =  Py_[i] - Ω * x_[i] - Ω*(x_[i] + tau*vx_[i])
-        if x_[i] > 0
-            x = max(x_[i],xmin)
+        if x_[i] > x00
+            x = max(x_[i]-x00,xmin)
             a = ablah * (xH/x)^4
-            vy_[i] += a * tau
+            Py_[i] += a * tau
         end
-        if x_[i] < 0
-            x = min(x_[i],-xmin)
+        if x_[i] < x00
+            x = min(x_[i]-x00,-xmin)
             a = ablah * (xH/x)^4
-            vy_[i] -= a * tau
+            Py_[i] -= a * tau
         end
         """ """
         x_[i]  +=  tau * vx_[i]
@@ -414,16 +423,23 @@ function move!(P::particles,M::mesh,tau::Float64)
             vy_[i] += k * 1.5*Ω*Lx #* 2.0/1.5
             Py_[i]  =  vy_[i] + 2Ω*x_[i] # Change?
         end#if
-        if x_[i] > 0
-            x = max(x_[i],xmin)
+        if x_[i] > x00
+            x = max(x_[i]-x00,xmin)
             a = ablah * (xH/x)^4
-            vy_[i] += a * tau
+            Py_[i] += a * tau
         end
-        if x_[i] < 0
-            x = min(x_[i],-xmin)
+        if x_[i] < x00
+            x = min(x_[i]-x00,-xmin)
             a = ablah * (xH/x)^4
-            vy_[i] -= a * tau
+            Py_[i] -= a * tau
         end
+        Dmoon = sqrt(x_[i]^2+y_[i]^2+z_[i]^2)
+        rmoon = -[x_[i],y_[i],z_[i]]
+        amoonmag = min(G*fiducials.Mmoon/Dmoon^2, G*fiducials.Mmoon/fiducials.H^2)
+        amoon = rmoon * amoonmag/Dmoon # G*fiducials.Mmoon/Dmoon^3
+        vx_[i] += amoon[1] * tau
+        vy_[i] += amoon[2] * tau
+        vz_[i] += amoon[3] * tau
     end#for
     # z motion (should combine)
     @simd for i in eachindex(P.z_)
@@ -447,6 +463,7 @@ function move!(P::particles,M::mesh,tau::Float64)
             z_[i] += vz_[i] * tau
         end
     end
+    M.t[1] += tau
 end#function
 
 function collide!(P::particles,M::mesh,sD::sortData, Dt::Float64; ecor::Float64=1.0,
@@ -501,7 +518,8 @@ function collide!(P::particles,M::mesh,sD::sortData, Dt::Float64; ecor::Float64=
                     vcm = 0.5*[vx_[ip1] + vx_[ip2],
                                 vy_[ip1] + vy_[ip2],
                                 vz_[ip1] + vz_[ip2]]     # Center-of-mass velocity
-                    cos_th = 1 - 2*pinch(pinch(pinch(pinch(pinch(rand())))))               # Cosine and sine of
+                    #cos_th = 1 - 2*pinch(pinch(pinch(pinch(pinch(rand())))))               # Cosine and sine of
+                    cos_th = 1 - 2*rand()
                     sin_th = sqrt(1.0 - cos_th^2)       #   collision angle theta
                     phi = 2π * rand()                   # Collsion angle phi
                     vrel = zeros(3)
@@ -542,24 +560,26 @@ function main()
 
     #for i in 1:1
     rings.sorter!( sD, P, M )
-    for i in 1:12345
+    for i in 1:123456
     rings.getmfp!(P,M,sD)
     rings.getcollfreq!(M,P)
     rings.getcoeff!(M,P,sD,Δt)
     rings.move!(P,M,Δt)
     rings.sorter!(sD, P, M)
     ncoll = rings.collide!(P,M,sD,Δt;usephenom=true)#ecor=0.90)
+    #ncoll = rings.collide!(P,M,sD,Δt;usephenom=false,ecor=0.90)
     print("Timestep: $i  Collisions: $ncoll.       ")
     cfreq = (ncoll*1.0)/(Npart*1.0) * 1.0/Δt
     omegaovercfreq = Ω/cfreq
     print("Ω / (collision frequency) = $omegaovercfreq\n")
-    if i%10 == 1
+    if i%100 == 1
         xx = [i for i in M.x_]
         xm = 0.5 * ( xx[1:end-1]+xx[2:end])
         display(plot(xm,sD.ncell_[:,1,5:9]))
         display(plot(P.z_,P.vz_,seriestype=:scatter))
         display(plot(P.x_,P.vx_,seriestype=:scatter))
         display(plot(P.x_,P.vy_,seriestype=:scatter))
+        display(plot(P.x_,P.y_,seriestype=:scatter))
     end
     end
 

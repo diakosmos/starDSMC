@@ -1,10 +1,14 @@
 module rings
 
+using Statistics
+using StatsPlots
+using KernelDensity
 using SpecialFunctions
 using Random
 using Test
 using LinearAlgebra # for norm
 using Plots
+using DSP
 
 #=macro doit(expn)
     eval(expn)
@@ -52,17 +56,22 @@ TESTS:
 
 fiducials = (
     Ω = 1.7846e-4, # angular frequency in middle of B-ring
-    τ = 3.0,   # optical depth
+    τ = 3.0,   # optical depth XXX NOT ACTUALLY USED YET XXX
     D = 1.0e2, # 1 m
-    Σ = 1.0e2, # g/cm^2
+    Σ = 1.0e2, # g/cm^2. 
     ρ = 1.0,   # g/cm^3
     m = 5.236e5, # =(π/6)*D^3, ≈ 523kg.
     n = 2.0e-7,# /cm^3
-    N = 3.82e-4, # = Σ / m, /cm^2
+    N = 3.82e-4 / 10 * 200, # = Σ / m, /cm^2 Divide by 10 as a brute-force way to get optical depth down to 0.5.
     σ = 7854.0, # (π/4)*D^2
     H = 1.0e3, # cm
     v′= 0.1785, # cm/s (peculiar velocity)
     R₀= 1.06e10, # orbital radius
+    #
+    xmin = 1.0e2, #floor for 1/x^4 to avoid divergence
+    ablah = 0.0*1.0e-10,
+    xH = 1.0e4,
+    Mmoon = 1.0e17,
 )
 
 Random.seed!(21237428012)
@@ -92,6 +101,8 @@ struct mesh
     crmax_::Array{Float64,3} # estimate of maximum relative speed in a cell
     selxtra_::Array{Float64,3} # extra selections carried over from last timestep
     coeff_::Array{Float64,3} # coeff related to collision freq in a cell
+    #
+    t::Array{Float64,1} # global time
 end
 """
  Nominal outer constructor. Note Hz is vertical scale height.
@@ -119,6 +130,7 @@ function mesh(nx,ny,nz,Lx::Real,Ly::Real,Hz::Real)
         zeros(nx,ny,nz), # crmax_
         zeros(nx,ny,nz), # selxtra_
         zeros(nx,ny,nz), # coeff_
+        [0.0,], # time starts at 0.0
     )
 end
 """ Convenience 2D (x,z) constructor: """
@@ -171,6 +183,7 @@ function particles(N::Int,Neff::Float64, Omega::Float64,shear::Float64,m::Real,D
     m_ = (m*ones(N)...,)
     D_ = (D*ones(N)...,)
     x_ = xlim[1] .+ (xlim[2]-xlim[1])*Random.rand(N)
+    #x_ = 0.0 .+ (xlim[2]-0.0)*Random.rand(N)
     y_ = ylim[1] .+ (ylim[2]-ylim[1])*Random.rand(N)
     z_ = Hz*Random.randn(N)
     vx_= dvx*Random.randn(N)
@@ -199,12 +212,17 @@ struct sortData:
     mesh is 3D.
 """
 struct sortData
-    M     ::myint
-    N     ::myint
+    M     ::myint # re M and N: (1) should rename to ncell and npart, or
+    N     ::myint # (2) just get rid of. (It appears I don't really need them.)
+    #
+    # particle arrays:
     cx_   ::Array{myint,1} # cell index. putting this here avoids constantly re-allocating
-    ncell_::Array{myint,1} # ncell_[i] = no of particles in cell "i"
-    index_::Array{myint,1} # just cumsum of ncell_, really
     Xref_::Array{myint,1}
+    #
+    # Mesh arrays:
+    ncell_::Array{myint,3} # ncell_[i] = no of particles in cell "i"
+    index_::Array{myint,3} # just cumsum of ncell_, really
+    #
 end
 #=function sortData(ncell::Int64,npart::Int64)
     sortData(
@@ -223,9 +241,9 @@ function sortData(p::particles, m::mesh)
         ncell,
         npart,
         zeros(myint,npart),
-        zeros(myint,ncell),
-        zeros(myint,ncell),
-        zeros(myint,npart)
+        zeros(myint,npart),
+        zeros(myint,m.nx, m.ny, m.nz), #ncell),
+        zeros(myint,m.nx, m.ny, m.nz), #ncell),
     )
 end
 """ convenience function so argument order doesn't matter: """
@@ -279,7 +297,7 @@ function sorter!(sD::sortData, P::particles, m::mesh)
     #print("sum: $s\n")
     """ (3) build index list (cumsum) """
     sD.index_[1] = 1
-    sD.index_[2:end] = 1 .+ cumsum(sD.ncell_)[1:end-1]
+    sD.index_[2:end] = 1 .+ cumsum(sD.ncell_[:])[1:end-1]
     cs=sD.index_
     #print("sD.index_: $cs\n")
     """ (4) build cross-reference list """
@@ -373,17 +391,36 @@ end
 """
 
 function move!(P::particles,M::mesh,tau::Float64)
+    G = 6.67e-8
     Ω = P.Omega; x_=P.x_; y_=P.y_; z_=P.z_; vx_ = P.vx_; vy_=P.vy_; vz_=P.vz_; Py_=P.Py_
     xL = M.x_[1]; xU = M.x_[end]; Lx = xU-xL; Ez_ = P.Ez_; Thz_ = P.Thz_
     m = P.m
+    ablah = fiducials.ablah * min(1,M.t[1] * Ω / 100) # Turn on force gradually
+    xmin = fiducials.xmin
+    xH = fiducials.xH
+    x00 = 0.0 #2.0e4
     # xy motion:
     @simd for i in eachindex(P.x_) # can use any of P's 1D length-N arrays.
         vx_[i] += -0.5 * tau * Ω^2 * x_[i]
         Py_[i]  =  vy_[i] + 2Ω*x_[i] # <-- since this is conserved, shouldn't be re-setting it each iteration.
         vx_[i] +=  tau * Ω * Py_[i]
         vy_[i]  =  Py_[i] - Ω * x_[i] - Ω*(x_[i] + tau*vx_[i])
+        """
+        if x_[i] > x00
+            x = max(x_[i]-x00,xmin)
+            a = ablah * (xH/x)^4
+            Py_[i] += a * tau
+        end
+        if x_[i] < x00
+            x = min(x_[i]-x00,-xmin)
+            a = ablah * (xH/x)^4
+            Py_[i] -= a * tau
+        end
+        """
+        """ """
         x_[i]  +=  tau * vx_[i]
         y_[i]  +=  tau * vy_[i]
+        """ """
         vx_[i] +=  tau * Ω * Py_[i]
         vx_[i] -=  0.5 * tau * (Ω^2 * x_[i])
         vy_[i]  =  Py_[i] - 2Ω*x_[i]
@@ -393,6 +430,25 @@ function move!(P::particles,M::mesh,tau::Float64)
             vy_[i] += k * 1.5*Ω*Lx #* 2.0/1.5
             Py_[i]  =  vy_[i] + 2Ω*x_[i] # Change?
         end#if
+        """
+        if x_[i] > x00
+            x = max(x_[i]-x00,xmin)
+            a = ablah * (xH/x)^4
+            Py_[i] += a * tau
+        end
+        if x_[i] < x00
+            x = min(x_[i]-x00,-xmin)
+            a = ablah * (xH/x)^4
+            Py_[i] -= a * tau
+        end
+        Dmoon = sqrt(x_[i]^2+y_[i]^2+z_[i]^2)
+        rmoon = -[x_[i],y_[i],z_[i]]
+        amoonmag = min(G*fiducials.Mmoon/Dmoon^2, G*fiducials.Mmoon/fiducials.H^2)
+        amoon = rmoon * amoonmag/Dmoon # G*fiducials.Mmoon/Dmoon^3
+        vx_[i] += amoon[1] * tau
+        vy_[i] += amoon[2] * tau
+        vz_[i] += amoon[3] * tau
+        """
     end#for
     # z motion (should combine)
     @simd for i in eachindex(P.z_)
@@ -416,6 +472,7 @@ function move!(P::particles,M::mesh,tau::Float64)
             z_[i] += vz_[i] * tau
         end
     end
+    M.t[1] += tau
 end#function
 
 function collide!(P::particles,M::mesh,sD::sortData, Dt::Float64; ecor::Float64=1.0,
@@ -491,15 +548,50 @@ function collide!(P::particles,M::mesh,sD::sortData, Dt::Float64; ecor::Float64=
     return coll
 end
 
+function smack!(P::particles, prob_per_part_per_dt, Dt, Δvxmag, Δvzmag)
+    #vx_=P.vx_; vy_=P.vy_; vz_=P.vz_
+    @simd for i in eachindex(P.x_) # can use any of P's 1D length-N arrays.
+        prob = prob_per_part_per_dt * Dt
+        if rand() < prob 
+            plusminus = rand((-1,1))
+            P.vx_[i] += Δvxmag 
+            P.vz_[i] += plusminus * Δvzmag 
+        end
+    end
+end
+
+function Eavg(P::particles)
+    E_ = zeros(length(P.x_))
+    @simd for i in eachindex(P.x_)
+        sKE = 0.5 * (P.vx_[i]^2 + P.vy_[i]^2 + P.vz_[i]^2)
+        sPE = 0.5 * fiducials.Ω^2 * P.z_[i]^2
+        E_[i] = P.m * (sKE + sPE)
+    end
+    return mean(E_)
+end
+
+function optical_depth(P::particles, M::mesh, Neff)
+    # ASSUMES FIXED CONSTANT CROSS-SECTION - need to fix!
+    xx = [i for i in M.x_]
+    xm_ = 0.5 * ( xx[1:end-1]+xx[2:end])
+    Δx_ = xx[2:end] .- xx[1:end-1]
+    sD = Main.rings.sortData(P,M)
+    rings.sorter!( sD, P, M )
+    np_ = sum(sD.ncell_[:,:,:],dims=(2,3))[:,1,1]
+    σXS = (π/4) * (2*P.D)^2
+    τ_ =  np_ .* σXS ./ Δx_ ./ (M.y_[end]-M.y_[1])  .* Neff
+    return (xm_,τ_)
+end
+
 """ Will move this eventually...."""
 function main()
     # number of cells in z-dir, in x-dir, and total number of particles:
-    Nz = 13; Nx = 512; Npart = 123456
+    Nz = 5; Nx = 512; Npart = 123456
     #
     f = fiducials
     Ω = f.Ω; D = f.D * 0.65; m=f.m; v′=f.v′; H=f.H
     s = -1.5 * Ω # shear
-    Δx = 100.0 * H # Range in x-dir in terms of vertical scale heights
+    Δx = 3000.0 * H # Range in x-dir in terms of vertical scale heights
     Δt = 0.1 / Ω
 
     Nreal = Δx * 2*π*f.R₀ * f.N
@@ -512,22 +604,42 @@ function main()
 
     #for i in 1:1
     rings.sorter!( sD, P, M )
-    for i in 1:12345
+    for i in 1:100200
     rings.getmfp!(P,M,sD)
     rings.getcollfreq!(M,P)
     rings.getcoeff!(M,P,sD,Δt)
     rings.move!(P,M,Δt)
+    rings.smack!(P,Δt* 1.0e-9,Δt,10.0,10.0)
     rings.sorter!(sD, P, M)
-    ncoll = rings.collide!(P,M,sD,Δt;usephenom=true)#ecor=0.90)
-    print("Timestep: $i  Collisions: $ncoll.       ")
-    cfreq = (ncoll*1.0)/(Npart*1.0) * 1.0/Δt
-    omegaovercfreq = Ω/cfreq
-    print("Ω / (collision frequency) = $omegaovercfreq\n")
-    if i%10 == 1
-        display(plot(sD.ncell_[(6*512):(7*512)]))
-        display(plot(P.z_,P.vz_,seriestype=:scatter))
-        display(plot(P.x_,P.vx_,seriestype=:scatter))
-        display(plot(P.x_,P.vy_,seriestype=:scatter))
+    ncoll = rings.collide!(P,M,sD,Δt;usephenom=true,ecor=0.90)
+    #ncoll = rings.collide!(P,M,sD,Δt;usephenom=false,ecor=0.90)
+    if i%100 == 0
+        print("Timestep: $i  Collisions: $ncoll.       ")
+        Meng = Eavg(P)
+        print("    Mean energy: $Meng         ")
+        cfreq = (ncoll*1.0)/(Npart*1.0) * 1.0/Δt
+        cfreqoveromega = cfreq/Ω
+        print("(collision frequency) / Ω = $cfreqoveromega\n")
+    end
+    skip = 10
+    if i%1000 == 1
+        xx = [i for i in M.x_]
+        xm = 0.5 * ( xx[1:end-1]+xx[2:end])
+        display(plot(P.z_[1:skip:end],P.vz_[1:skip:end],seriestype=:scatter;xlabel="z",ylabel="vz"))
+        dens = kde((P.z_,P.vz_))
+        display(plot(dens))
+        display(plot(P.x_[1:skip:end],P.z_[1:skip:end],seriestype=:scatter;xlabel="x",ylabel="z"))
+        display(plot(kde((P.x_,P.z_))))
+        # # display(plot(P.x_[1:skip:end],P.vy_[1:skip:end],seriestype=:scatter;xlabel="x",ylabel="vy"))
+        display(plot(kde((P.x_,P.vy_))))
+        # # display(plot(P.x_[1:skip:end],P.y_[1:skip:end],seriestype=:scatter;xlabel="x",ylabel="y"))
+        display(plot(xm,sD.ncell_[:,1,3:5]))
+        (xm_,τ_) = optical_depth(P,M,Neff)
+        display(plot(xm_,τ_))
+        filt = DSP.gaussian(5,0.5)
+        filt /= sum(filt)
+        τfilt_ = DSP.conv(τ_,filt)
+        display(plot(xm_,τfilt_[3:end-2]))
     end
     end
 
@@ -535,4 +647,5 @@ function main()
     # Now, to set timestep, need to estimate max collision freq.
     (sD,P,M)
 end
+
 end
